@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+helpdesk.db
+eval_test.db
+eval_results.json
+.streamlit/secrets.toml
