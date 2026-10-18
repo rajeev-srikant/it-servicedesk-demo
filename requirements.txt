@@ -1,0 +1,6 @@
+streamlit[auth]
+google-genai
+python-dotenv
+numpy
+pandas
+pypdf
