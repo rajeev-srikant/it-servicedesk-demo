@@ -1,0 +1,92 @@
+[
+  {
+    "ticket_id": "T-1001",
+    "requester_email": "mai.saito@testbank.com",
+    "title": "VPN not connecting from home",
+    "category": "VPN & Remote Access",
+    "priority": "Medium",
+    "team": "Network Team",
+    "status": "In progress",
+    "channel": "Email",
+    "age_hours": 80,
+    "first_response_after_hours": 20,
+    "history": [
+      {
+        "after_hours": 0,
+        "text": "Ticket created from email. TB Connect shows 'connection failed'."
+      },
+      {
+        "after_hours": 20,
+        "text": "Network Team: asked user to restart the TB Connect app and the laptop."
+      }
+    ]
+  },
+  {
+    "ticket_id": "T-1002",
+    "requester_email": "takumi.kobayashi@testbank.com",
+    "title": "Laptop very slow to start",
+    "category": "Hardware",
+    "priority": "Low",
+    "team": "Hardware Team",
+    "status": "New",
+    "channel": "Portal",
+    "age_hours": 140,
+    "history": [
+      {
+        "after_hours": 0,
+        "text": "Ticket created. Laptop takes about 10 minutes to start."
+      }
+    ]
+  },
+  {
+    "ticket_id": "T-1003",
+    "requester_email": "emi.watanabe@testbank.com",
+    "title": "Printer TKY-3F-Printer paper jam error",
+    "category": "Printer",
+    "priority": "Medium",
+    "team": "Service Desk",
+    "status": "Resolved",
+    "channel": "Phone",
+    "age_hours": 100,
+    "first_response_after_hours": 3,
+    "resolved_after_hours": 24,
+    "history": [
+      {
+        "after_hours": 0,
+        "text": "Ticket created. False paper jam error on 3rd floor printer."
+      },
+      {
+        "after_hours": 3,
+        "text": "Service Desk: engineer booked to check the printer."
+      },
+      {
+        "after_hours": 24,
+        "text": "Service Desk: sensor cleaned, printer working again. Resolved."
+      }
+    ]
+  },
+  {
+    "ticket_id": "T-1004",
+    "requester_email": "rajeev@testbank.com",
+    "title": "Request: second monitor for home office",
+    "category": "Hardware",
+    "priority": "Low",
+    "team": "Hardware Team",
+    "status": "Waiting for approval",
+    "channel": "Portal",
+    "age_hours": 125,
+    "first_response_after_hours": 26,
+    "paused_after_hours": 26,
+    "waiting_for": "Your manager's approval (the monitor costs more than the ¥30,000 accessory budget)",
+    "history": [
+      {
+        "after_hours": 0,
+        "text": "Ticket created. Requested a 27-inch monitor for home office."
+      },
+      {
+        "after_hours": 26,
+        "text": "Hardware Team: waiting for manager approval."
+      }
+    ]
+  }
+]
