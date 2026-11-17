@@ -64,7 +64,7 @@ def write(names):
     try:
         import agent
         import tools
-        r = tools._client.models.generate_content(model=agent.CHAT_MODEL,
+        r = agent.generate(tools._client,
                                                   contents=PROMPT.format(stats=json.dumps(stats, ensure_ascii=False)),
                                                   config={"temperature": 0.2})
         agent._usage("weekly-summary", r)

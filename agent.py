@@ -3,13 +3,62 @@
 This file has no screen code, so the same agent can be used by the app (agent_app.py)
 and by the automatic test set (eval_agent.py).
 """
+import os
+import re
 from google.genai import types
 import tools
 import db
 import sharepoint
 import incidents
 
-CHAT_MODEL = "gemini-flash-latest"
+# Which Gemini model to use. Google sometimes retires model names, so the app does not depend on one name:
+# 1) GEMINI_MODEL in .env / Streamlit secrets, if set; 2) the names below, in order; 3) the newest Flash model
+# that Google's model list says this API key can use. A name that answers "404 NOT_FOUND" is skipped.
+MODEL_CANDIDATES = [m for m in [os.getenv("GEMINI_MODEL", "").strip()] if m] + [
+    "gemini-flash-latest", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+    "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+CHAT_MODEL = MODEL_CANDIDATES[0]
+_RETIRED = set()
+
+
+def _version(name):
+    nums = re.findall(r"\d+(?:\.\d+)?", name)
+    return float(nums[0]) if nums else 0.0
+
+
+def _next_model(client):
+    for m in MODEL_CANDIDATES:
+        if m not in _RETIRED:
+            return m
+    try:                                           # ask Google which models this key can use
+        found = []
+        for m in client.models.list():
+            name = (m.name or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or ["generateContent"]
+            if ("flash" in name and "generateContent" in actions and name not in _RETIRED
+                    and not any(x in name for x in ("image", "tts", "audio", "live", "embedding"))):
+                found.append(name)
+        found.sort(key=lambda n: ("preview" not in n and "exp" not in n, "lite" not in n, _version(n)), reverse=True)
+        return found[0] if found else None
+    except Exception:
+        return None
+
+
+def generate(client, **kwargs):
+    """generate_content with automatic fallback when Google retires a model name (404 NOT_FOUND)."""
+    global CHAT_MODEL
+    for _ in range(12):
+        try:
+            return client.models.generate_content(model=CHAT_MODEL, **kwargs)
+        except Exception as ex:
+            if "NOT_FOUND" not in str(ex) and "404" not in str(ex):
+                raise
+            _RETIRED.add(CHAT_MODEL)
+            nxt = _next_model(client)
+            if not nxt:
+                raise
+            CHAT_MODEL = nxt
+    raise RuntimeError("No Gemini model available for this API key")
 MAX_STEPS = 8                      # guardrail: at most 8 steps per request
 
 # Estimated prices in US dollars per 1 million tokens (check the Gemini pricing page; prices change)
@@ -165,7 +214,7 @@ def run(client, contents, user, on_step=None, trace=None):
     for _ in range(MAX_STEPS):
         if on_step:
             on_step("🤔 Thinking…")
-        response = client.models.generate_content(model=CHAT_MODEL, contents=contents, config=_config(user))
+        response = generate(client, contents=contents, config=_config(user))
         _usage(user, response)
         calls = response.function_calls or []
 

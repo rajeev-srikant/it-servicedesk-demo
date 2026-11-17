@@ -139,8 +139,8 @@ def _ai_draft(t, note):
     import agent
     import tools
     history = "\n".join(f"- {h['text']}" for h in t["history"])[-3000:]
-    resp = tools._client.models.generate_content(
-        model=agent.CHAT_MODEL,
+    resp = agent.generate(
+        tools._client,
         contents=_PROMPT.format(title=t["title"], team=t["team"], category=t["category"], history=history, note=note),
         config={"response_mime_type": "application/json", "temperature": 0})
     agent._usage("kb-draft", resp)
@@ -253,8 +253,8 @@ def group_gaps():
     try:
         import agent
         import tools
-        resp = tools._client.models.generate_content(
-            model=agent.CHAT_MODEL, contents=_GROUP_PROMPT.format(
+        resp = agent.generate(
+            tools._client, contents=_GROUP_PROMPT.format(
                 rows="\n".join(f"{g['id']}: {g['question']}" for g in gaps)),
             config={"response_mime_type": "application/json", "temperature": 0})
         agent._usage("kb-gaps", resp)
