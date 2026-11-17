@@ -102,6 +102,23 @@ def render(names):
                     resolved_prev.resolve_hours.median() if len(resolved_prev) else None, good_when_up=False)),
     ]) + "</div>", unsafe_allow_html=True)
 
+    # ---------- AI summary for management (numbers from code, sentences from the AI) ----------
+    with st.container(key="card_summary"):
+        import insights
+        c1, c2 = st.columns([3.2, 1], vertical_alignment="center")
+        c1.markdown('<div class="dash-h">AI summary for management · last 7 days</div>'
+                    '<div class="dash-n" style="margin:0">Written by the AI from the numbers on this dashboard only. '
+                    'It cannot add figures of its own.</div>', unsafe_allow_html=True)
+        if c2.button("Write this week's summary", key="ai_summary", icon=":material/auto_awesome:", width="stretch"):
+            with st.spinner("The AI is writing the summary…"):
+                insights.write(names)
+        saved = insights.saved()
+        if saved:
+            st.markdown(saved["text"])
+            st.caption(f"Written {saved['at']} · period {saved['period']} · always check before sharing")
+            st.download_button("Download summary", saved["text"].encode("utf-8"), key="dl_summary",
+                               file_name=f"it_weekly_summary_{saved['at'][:10]}.md", icon=":material/download:")
+
     # ---------- Row: volume trend | open backlog by team ----------
     c1, c2 = st.columns([1.7, 1], gap="medium")
     with c1, st.container(key="card_trend"):
@@ -219,9 +236,10 @@ def render(names):
         _card_title("AI virtual agent impact", f"Last {days} days, all teams")
         sh = pd.DataFrame(db.list_self_help())
         if not sh.empty:
-            sh["at"] = pd.to_datetime(sh["at"]).dt.tz_localize(db.TOKYO)
+            sh["at"] = pd.to_datetime(sh["at"], format="mixed").dt.tz_localize(db.TOKYO)
             sh = sh[(sh["at"] >= start) & (sh["at"] < end)]
         solved = int((sh.outcome == "solved").sum()) if not sh.empty else 0
+        mins = int(db.get_setting("minutes_per_ticket", "60"))     # assumption the IT admin can change
         asked = len(sh)
         all_cur, _, _ = an.window(df_all, days)
         va = int((all_cur.Channel == "Virtual agent").sum())
@@ -230,9 +248,16 @@ def render(names):
                  f'{an.pct(solved, asked) or 0:.0f}% of self-help chats</span>'),
             _kpi("Tickets via the agent", f"{an.pct(va, len(all_cur)) or 0:.0f}%",
                  f'<span class="kd" style="color:#5B6B7F">{va} of {len(all_cur)} new tickets</span>'),
-            _kpi("IT time saved (est.)", f"{solved * 15 / 60:.0f} h",
-                 '<span class="kd" style="color:#5B6B7F">15 min per avoided ticket</span>'),
+            _kpi("IT time saved (est.)", f"{solved * mins / 60:.0f} h",
+                 f'<span class="kd" style="color:#5B6B7F">{solved} tickets avoided × {mins} min</span>'),
         ]) + "</div>", unsafe_allow_html=True)
+        with st.popover("Change time-per-ticket assumption", icon=":material/tune:"):
+            new = st.number_input("Average IT effort per simple ticket (minutes)", min_value=5, max_value=480,
+                                  value=mins, step=5, help="Reading, contacting the user, fixing, updating and "
+                                  "closing. Use your team's real average from the ticket system.")
+            if new != mins:
+                db.set_setting("minutes_per_ticket", int(new))
+                st.rerun()
         _, share, order = an.trend(df_all, "Weekly", 10)
         lc = alt.Chart(share).mark_line(color="#2a78d6", strokeWidth=2,
                                         point=alt.OverlayMarkDef(size=50, filled=True, color="#2a78d6")).encode(

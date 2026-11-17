@@ -4,6 +4,7 @@ import html
 import io
 import uuid
 import datetime
+from urllib.parse import unquote
 from PIL import Image
 import pandas as pd
 import streamlit as st
@@ -16,11 +17,15 @@ import db
 import sla
 import analytics as an
 import dashboard
+import sharepoint
+import kb
+import incidents
+import insights
 
 load_dotenv()
 
 BRAND = "TestBank"
-MINUTES_PER_TICKET = 15            # assumption for "IT time saved": average handling time of a simple ticket
+MINUTES_PER_TICKET = lambda: int(db.get_setting("minutes_per_ticket", "60"))   # IT admin can change it
 st.set_page_config(page_title=f"{BRAND} IT Service Desk", page_icon=":material/support_agent:", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -51,6 +56,15 @@ button, [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-prima
   background:#fff; border:1px solid var(--line); border-top:3px solid var(--navy); border-radius:4px;
   padding:10px 18px; margin-bottom:14px; }
 .tb-brand { display:flex; align-items:center; gap:12px; }
+.st-key-tbhead { background:#fff; border:1px solid var(--line); border-top:3px solid var(--navy); border-radius:4px;
+  padding:12px 18px; margin-bottom:14px; overflow:visible; }
+.st-key-tbhead [data-testid="stHorizontalBlock"] { min-height:44px; align-items:center; }
+.st-key-tbhead .tb-user { white-space:nowrap; line-height:1.35; }
+.st-key-tbhead [data-testid="stMarkdownContainer"] p { margin:0; }
+.st-key-sp_badge button { min-height:0 !important; padding:3px 10px !important; background:var(--navy-l) !important;
+  border:1px solid #C9D7E8 !important; color:var(--navy) !important; border-radius:3px !important; }
+.st-key-sp_badge button p { font-size:12px !important; }
+.st-key-sp_badge button:hover { border-color:var(--navy) !important; }
 .tb-logo { width:30px; height:30px; border-radius:3px; background:var(--navy); color:#fff; font-weight:700;
   display:flex; align-items:center; justify-content:center; font-size:12px; letter-spacing:.3px; }
 .tb-title { font-size:16px; font-weight:600; color:var(--ink); line-height:1.2; }
@@ -175,6 +189,35 @@ button, [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-prima
 
 button[data-variant="segmented_control"][aria-checked="true"] { background:var(--navy-l) !important;
   color:var(--navy) !important; border-color:var(--navy) !important; }
+/* SharePoint */
+.tb-sp { font-size:12px; color:var(--navy); background:var(--navy-l); border:1px solid #C9D7E8; padding:2px 8px; border-radius:3px; }
+.sp-saved { display:flex; gap:10px; align-items:center; background:#F3F7FC; border:1px solid #C9D7E8;
+  border-left:3px solid var(--navy); border-radius:4px; padding:8px 12px; font-size:13px; color:var(--ink); margin:4px 0; }
+.sp-saved span { font-size:12px; color:var(--ink2); }
+.sp-ico { flex-shrink:0; width:26px; height:26px; border-radius:3px; background:var(--navy); color:#fff !important;
+  font-weight:700; font-size:11px !important; display:flex; align-items:center; justify-content:center; }
+.sp-flow { display:grid; grid-template-columns: 120px 1fr; gap:8px 12px; align-items:center; margin:2px 0 14px 0; }
+.sp-flow .lbl { font-size:12px; font-weight:600; color:var(--ink2); text-transform:uppercase; letter-spacing:.5px; }
+.sp-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.sp-step { background:#fff; border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-size:13px; color:var(--ink); }
+.sp-step.ai { background:var(--navy-l); border-color:var(--navy); font-weight:600; color:var(--navy); }
+.sp-step.list { border-color:var(--ok); color:var(--ok); font-weight:600; background:#F2F9F3; }
+.sp-arrow { color:var(--ink3); }
+.inc-banner { display:flex; gap:10px; align-items:flex-start; background:#FFF6E5; border:1px solid #F0D9A8;
+  border-left:3px solid var(--warn); border-radius:4px; padding:9px 14px; font-size:13.5px; color:var(--ink);
+  margin-bottom:10px; }
+.inc-banner .live-dot { color:var(--warn); margin-top:6px; }
+.inc-banner span { font-size:12.5px; color:var(--ink2); }
+[class*="st-key-outage_"], [class*="st-key-inc_"], [class*="st-key-gap_"] { background:#fff; border:1px solid var(--line);
+  border-left:3px solid var(--bad); border-radius:4px; padding:12px 16px 12px 16px; margin-bottom:10px; }
+[class*="st-key-gap_"] { border-left-color:var(--warn); }
+.kb-box { background:#F7F4FC; border-color:#DCD3F0; border-left-color:var(--purple); }
+.kb-ico { background:var(--purple) !important; }
+[class*="st-key-kbd_"] { background:#fff; border:1px solid var(--line); border-left:3px solid var(--purple);
+  border-radius:4px; padding:12px 16px 4px 16px; margin-bottom:10px; }
+.sp-tag { font-size:11.5px; color:var(--ink3); margin-top:2px; }
+.sp-crumb { font-size:13px; color:var(--ink2); margin:2px 0 10px 0; }
+.sp-crumb b { color:var(--ink); }
 /* Live chat with a person */
 .live-sys { text-align:center; font-size:12.5px; color:var(--ink2); margin:8px 0; }
 .live-sys::before, .live-sys::after { content:"—"; color:var(--ink3); margin:0 8px; }
@@ -336,12 +379,16 @@ def process(step_fn):
     else:
         sources = cited_sources(out["text"], out["trace"]["sources"])
         emails = out["trace"].get("emails", [])
-        searched_self_help = any(x.startswith("Self_Help_Guide") for x in out["trace"]["sources"])
-        is_self_help = not emails and (any(x.startswith("Self_Help_Guide") for x in sources) or
+        searched_self_help = any(x.startswith(("Self_Help_Guide", "KB-")) for x in out["trace"]["sources"])
+        for src in sources:                            # knowledge base: count how often an article is suggested
+            if src.startswith("KB-"):
+                kb.count(src.split(" · ")[0], "suggested")
+        is_self_help = not emails and (any(x.startswith(("Self_Help_Guide", "KB-")) for x in sources) or
                                        (searched_self_help and ("solve" in out["text"].lower() or "解決" in out["text"])))
         st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": out["text"],
                                          "steps": out["trace"]["steps"], "sources": sources, "emails": emails,
                                          "self_help": "ask" if is_self_help else None,
+                                         "kb": out["trace"].get("kb", []),
                                          "question": last_question()})
 
 
@@ -375,6 +422,10 @@ def self_help_answer(m, solved):
     m["self_help"] = "solved" if solved else "ticket"
     outcome = "solved" if solved else "needed a ticket"
     db.log_self_help(USER, m.get("question", ""), outcome)
+    if solved:                                         # a KB article solved it: count it
+        for src in m.get("sources", []):
+            if src.startswith("KB-"):
+                kb.count(src.split(" · ")[0], "solved")
     db.log_audit(USER, "self_help_result", {"question": m.get("question", "")}, {"outcome": outcome}, "user action")
     if solved:
         text = "Great, I'm glad that's sorted! No ticket needed. If anything else comes up, just ask."
@@ -384,6 +435,7 @@ def self_help_answer(m, solved):
         st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": text, "steps": [],
                                          "sources": [], "emails": [], "question": m.get("question", "")})
     else:
+        kb.log_gap(USER, m.get("question", ""), "self-help did not solve it")
         ask("That didn't solve my problem. Please raise a ticket for me.")
 
 
@@ -464,6 +516,7 @@ def ticket_card(t, show_requester=False, key_prefix="tk", actions=False):
                     f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(t["status"])}</span></div>'
                     f'<div class="tk-title">{e(t["title"])}</div>'
                     f'<div class="tk-meta">{who}{e(t["team"])} · {pr_html} priority · Opened {e(t["created"])}</div>'
+                    f'<div class="sp-tag">SharePoint · {e(sharepoint.LIST_NAME)} · item {e(sharepoint.item_id(t))}</div>'
                     f'<div><span class="sla sla-{r["state"]}">{e(r["label"])}</span> '
                     + (f'<span class="sla sla-{res["state"]}">{e(res["label"])}</span>' if res["label"] else "")
                     + f'</div><div class="sla-t">{e(sla.targets_text(t))}</div>'
@@ -691,13 +744,30 @@ with st.sidebar:
                    else 'Conversations are not saved.') + '</div>', unsafe_allow_html=True)
 
 # ---------- Top bar ----------
-st.markdown(f'<div class="tb-header"><div class="tb-brand"><div class="tb-logo">TB</div>'
-            f'<div class="tb-title">{BRAND}<span>IT Service Desk</span></div></div>'
-            '<div class="tb-right"><span class="tb-env">Demo environment</span>'
-            f'<div class="tb-user"><div class="tb-avatar">{e(initials(me["name"]))}</div><div>'
-            f'<div class="tb-uname">{e(short_name(me["name"]))}</div>'
-            f'<div class="tb-urole">{e(role_label)} · {e(me["department"])}</div></div></div></div></div>',
-            unsafe_allow_html=True)
+def go_sharepoint(view=None):
+    """Button callback: open the admin's SharePoint page (optionally on a given List view)."""
+    st.session_state.nav = "SharePoint"
+    if view:
+        st.session_state.sp_view = view
+
+
+with st.container(key="tbhead"):
+    h1, h2, h3, h4 = st.columns([3.3, 1.3, 2.2, 1.8], vertical_alignment="center", gap="small")
+    h1.markdown(f'<div class="tb-brand"><div class="tb-logo">TB</div>'
+                f'<div class="tb-title">{BRAND}<span>IT Service Desk</span></div></div>', unsafe_allow_html=True)
+    h2.markdown('<div style="text-align:right"><span class="tb-env">Demo environment</span></div>',
+                unsafe_allow_html=True)
+    if is_admin:                                   # the admin can click the badge to open the SharePoint page
+        h3.button(sharepoint.mode_label(), key="sp_badge", icon=":material/open_in_new:", on_click=go_sharepoint,
+                  help="Open the SharePoint integration page", width="stretch")
+    else:
+        h3.markdown(f'<div style="text-align:center"><span class="tb-sp" title="Tickets are saved as items of the '
+                    f'SharePoint List {e(sharepoint.LIST_NAME)}">{e(sharepoint.mode_label())}</span></div>',
+                    unsafe_allow_html=True)
+    h4.markdown(f'<div class="tb-user"><div class="tb-avatar">{e(initials(me["name"]))}</div><div>'
+                f'<div class="tb-uname">{e(short_name(me["name"]))}</div>'
+                f'<div class="tb-urole">{e(role_label)} · {e(me["department"])}</div></div></div>',
+                unsafe_allow_html=True)
 
 
 # ---------- Live chat with a person (plain software, no AI) ----------
@@ -759,7 +829,51 @@ def live_feed_employee(tid):
 
 
 
+SP_ACTION = {"created": "New item", "handoff": "New item", "updated": "Item updated", "admin_update": "Item updated",
+             "closed": "Item updated (Closed)"}
+
+
+def go_kb():
+    st.session_state.nav = "Knowledge base"
+
+
+def kb_draft_box(article_id, msg_id):
+    a = kb.get(article_id)
+    if not a:
+        return
+    c1, c2 = st.columns([3.2, 1], vertical_alignment="center")
+    c1.markdown(f'<div class="sp-saved kb-box"><span class="sp-ico kb-ico">KB</span><div><b>Knowledge base draft '
+                f'{e(a["id"])}</b> · {e(a["title"])}<br><span>Written by the AI from ticket {e(a["source_ticket"])} · '
+                f'{e(a["status"])}</span></div></div>', unsafe_allow_html=True)
+    if is_admin:
+        c2.button("Review", key=f"kbr_{msg_id}_{article_id}", icon=":material/rate_review:", on_click=go_kb,
+                  width="stretch")
+
+
+def sharepoint_saved(mail, msg_id):
+    """Shows where the ticket change went: the SharePoint List item."""
+    t = db.get_ticket(mail["ticket_id"])
+    if not t or mail["kind"] not in SP_ACTION:
+        return
+    c1, c2 = st.columns([3.2, 1], vertical_alignment="center")
+    c1.markdown(f'<div class="sp-saved"><span class="sp-ico">SP</span><div><b>Saved to SharePoint</b> · '
+                f'{e(sharepoint.LIST_NAME)} List · item {e(sharepoint.item_id(t))}<br><span>{SP_ACTION[mail["kind"]]} · '
+                f'{e(t["ticket_id"])} · {e(t["status"])} · {e(t["team"])}'
+                f'{"" if sharepoint.is_live() else " · simulated"}</span></div></div>', unsafe_allow_html=True)
+    if is_admin:
+        c2.button("View in List", key=f"spv_{msg_id}_{mail['ticket_id']}", icon=":material/list_alt:",
+                  on_click=go_sharepoint, args=("Created today",), width="stretch")
+
+
+def incident_banner():
+    for inc in incidents.active():
+        st.markdown(f'<div class="inc-banner"><span class="live-dot"></span><div><b>Known issue · {e(inc["id"])}: '
+                    f'{e(inc["title"])}</b><br><span>{e(inc["message"])} · since {e(inc["created_at"][11:])}'
+                    f'</span></div></div>', unsafe_allow_html=True)
+
+
 def render_chat():
+    incident_banner()
     clicked = None
     if st.session_state.display or st.session_state.pending:
         _, b1, b2 = st.columns([1.6, 1.4, 1])
@@ -819,6 +933,10 @@ def render_chat():
                     if m.get("sources"):
                         st.markdown('<div class="srcs">' + "".join(f'<span class="src">{e(s)}</span>'
                                     for s in m["sources"]) + "</div>", unsafe_allow_html=True)
+                    for mail in m.get("emails", []):
+                        sharepoint_saved(mail, m["id"])
+                    for article_id in m.get("kb", []):
+                        kb_draft_box(article_id, m["id"])
                     for mail in m.get("emails", []):
                         email_preview(mail["kind"], mail["ticket_id"])
                     if m.get("steps"):
@@ -1103,7 +1221,7 @@ def page_quality():
     st.markdown('<div class="section-title">Self-help · tickets avoided</div>' +
                 kpis(wide=True, items=[("Solved without a ticket", solved), ("Still needed a ticket", needed),
                       ("Self-help success rate", rate),
-                      (f"IT time saved (est. {MINUTES_PER_TICKET} min/ticket)", f"{solved * MINUTES_PER_TICKET / 60:.0f} hours")]),
+                      (f"IT time saved (est. {MINUTES_PER_TICKET()} min/ticket)", f"{solved * MINUTES_PER_TICKET() / 60:.0f} hours")]),
                 unsafe_allow_html=True)
 
     totals = db.usage_totals()
@@ -1228,6 +1346,10 @@ def end_live(tid, solved, note):
     db.add_history(tid, f"Service Desk: live chat ended by {me_name}. " + (note or "") +
                    (" Resolved." if solved else " Ticket kept open for follow-up."))
     db.update_ticket(tid, status="Resolved" if solved else "In progress")
+    if solved and note:                                # knowledge loop: the fix becomes a draft KB article
+        draft = kb.create_draft(tid, note, created_by=me_name)
+        if draft:
+            st.toast(f"Draft knowledge base article {draft} created. Review it under Knowledge base.")
     db.log_audit(USER, "end_live_chat", {"ticket_id": tid, "solved": solved, "note": note},
                  {"ended": tid}, "user action")
     st.session_state.live_open = None
@@ -1236,6 +1358,15 @@ def end_live(tid, solved, note):
 @st.fragment(run_every=5)
 def live_alert(current_page):
     """A notice on every admin page when someone is waiting for a person."""
+    if current_page != "Incidents":
+        for g in incidents.detect()[:1]:
+            a, b = st.columns([5, 1], vertical_alignment="center")
+            a.markdown(f'<div class="live-alert"><span class="live-dot"></span>Possible outage: {g["people"]} people '
+                       f'reported {e(g["category"])} problems to the {e(g["team"])} in the last {g["window"]} min</div>',
+                       unsafe_allow_html=True)
+            if b.button("Review", key="go_inc", type="primary", width="stretch", icon=":material/warning:"):
+                st.session_state.goto_inc = True
+                st.rerun(scope="app")
     waiting = [c for c in db.list_live_chats() if c["status"] == "waiting"]
     if not waiting or current_page == "Live chats":
         return
@@ -1249,6 +1380,319 @@ def live_alert(current_page):
         st.rerun(scope="app")
 
 
+def page_sharepoint():
+    live = sharepoint.is_live()
+    st.markdown(f'<div class="dash-title">SharePoint integration</div><div class="dash-sub">The agent reads and writes '
+                f'tickets as items of the SharePoint List “{e(sharepoint.LIST_NAME)}” through Microsoft Graph. '
+                f'Mode: <b>{e(sharepoint.mode_label())}</b>'
+                + ('' if live else ' · requests are recorded here, not sent') + '</div>', unsafe_allow_html=True)
+    arrow = '<span class="sp-arrow">→</span>'
+    st.markdown('<div class="card"><div class="sp-flow">'
+                '<div class="lbl">Today</div><div class="sp-row"><span class="sp-step">Employee</span>' + arrow +
+                '<span class="sp-step">Email, phone or portal</span>' + arrow +
+                '<span class="sp-step">IT staff type it into the List</span>' + arrow +
+                '<span class="sp-step list">SharePoint List</span>' + arrow +
+                '<span class="sp-step">IT team works the item</span></div>'
+                '<div class="lbl">With the agent</div><div class="sp-row"><span class="sp-step">Employee</span>' + arrow +
+                '<span class="sp-step ai">AI agent: self-help first, employee confirms</span>' + arrow +
+                '<span class="sp-step list">SharePoint List (Graph API)</span>' + arrow +
+                '<span class="sp-step">IT team works the item, as today</span></div></div>'
+                '<div class="dash-n" style="margin:0">Nothing changes for the IT team: the agent writes the same '
+                'List items they already use, with the details filled in correctly.</div></div>',
+                unsafe_allow_html=True)
+    t_list, t_log, t_lib, t_conn = st.tabs(["IT Helpdesk List", "Graph API log", "Document library",
+                                             "Connection & column mapping"])
+    with t_list:
+        site = sharepoint.SITE_URL.split("//")[-1]
+        st.markdown(f'<div class="sp-crumb">{e(site)} &nbsp;›&nbsp; Lists &nbsp;›&nbsp; '
+                    f'<b>{e(sharepoint.LIST_NAME)}</b></div>', unsafe_allow_html=True)
+        tickets = db.list_tickets()
+        f1, f2, f3 = st.columns([2.2, 1.4, 1.6], vertical_alignment="bottom")
+        st.session_state.setdefault("sp_view", "Open items")
+        view = f1.segmented_control("View", ["All items", "Open items", "Created today"], key="sp_view") or "Open items"
+        by_agent = {r["ticket_id"] for r in db.list_graph(100000) if r["method"] == "POST" and "Updates" not in r["path"]}
+        team = f2.selectbox("Assigned team", ["All teams"] + tools.TEAMS, key="sp_team")
+        q = f3.text_input("Search this list", key="sp_q", placeholder="Title, ticket or person")
+        today = db.now().date().isoformat()
+        rows = []
+        for t in sorted(tickets, key=lambda x: x["created_at"] or "", reverse=True):
+            if view == "Open items" and t["status"] in ("Resolved", "Closed"):
+                continue
+            if view == "Created today" and t["created"] != today:
+                continue
+            if team != "All teams" and t["team"] != team:
+                continue
+            who = short_name(names.get(t["requester_email"], t["requester_email"]))
+            if q and q.lower() not in f'{t["ticket_id"]} {t["title"]} {who}'.lower():
+                continue
+            modified = t["history"][-1]["at"] if t["history"] else t["created"]
+            rows.append({"Added by": "AI agent" if t["ticket_id"] in by_agent else "",
+                         "ID": int(sharepoint.item_id(t)) if str(sharepoint.item_id(t)).isdigit() else sharepoint.item_id(t),
+                         "Ticket ID": t["ticket_id"], "Title": t["title"], "Status": t["status"],
+                         "Priority": t["priority"], "Assigned team": t["team"], "Requested by": who,
+                         "Category": t["category"], "Channel": t.get("channel") or "Portal",
+                         "Created": (t["created_at"] or t["created"])[:16].replace("T", " "), "Modified": modified})
+        st.caption(f"{len(rows)} items" + ("" if live else " · simulated copy of the SharePoint List, same columns"))
+        df = pd.DataFrame(rows)
+        new = int((df["Added by"] != "").sum()) if len(df) else 0
+        if new:
+            st.markdown(f'<div class="sp-saved" style="margin-bottom:8px"><span class="sp-ico">SP</span><div>'
+                        f'<b>{new} item{"s" if new != 1 else ""} added by the AI agent</b> since the demo was reset '
+                        '<span>· highlighted below</span></div></div>', unsafe_allow_html=True)
+        styled = df.style.apply(lambda r: ["background-color:#EAF3FB;font-weight:600" if r["Added by"] else ""
+                                           for _ in r], axis=1) if len(df) else df
+        st.dataframe(styled, hide_index=True, width="stretch", height=min(40 + 35 * max(len(rows), 1), 520),
+                     column_config={"ID": st.column_config.NumberColumn(format="%d", width="small"),
+                                    "Added by": st.column_config.TextColumn(width="small")})
+    with t_log:
+        log = db.list_graph()
+        st.markdown(f'<div class="dash-n">Every ticket change becomes a Microsoft Graph request to SharePoint. '
+                    f'{"These requests were sent." if live else "Simulated mode: these are the exact requests that would be sent; switching to live mode sends them."}'
+                    '</div>', unsafe_allow_html=True)
+        if not log:
+            st.markdown('<div class="card" style="font-size:13.5px;color:#5A6575">No requests yet. Create a ticket in the '
+                        'chat (for example “My keyboard stopped working, please raise a ticket”) and it appears here.</div>',
+                        unsafe_allow_html=True)
+        else:
+            view = pd.DataFrame([{"Time": r["at"][11:], "Method": r["method"],
+                                  "Request": unquote("/" + r["path"].split("/lists/")[-1]) if "/lists/" in r["path"] else r["path"],
+                                  "Ticket": r["ticket_id"] or "", "Result": r["outcome"]} for r in log])
+            st.dataframe(view, hide_index=True, width="stretch", height=min(40 + 35 * len(view), 330))
+            pick = st.selectbox("Show the full request", range(len(log)), key="sp_pick",
+                                format_func=lambda i: f'{log[i]["at"][11:]} · {log[i]["method"]} · {log[i]["ticket_id"] or ""}')
+            r = log[pick]
+            body = json.dumps(json.loads(r["body"]), indent=2, ensure_ascii=False) if r["body"] else ""
+            st.code(f'{r["method"]} {sharepoint.GRAPH}{r["path"]}\nAuthorization: Bearer <token from Microsoft Entra ID>\n'
+                    f'Content-Type: application/json\n\n{body}'.rstrip(), language="http")
+    with t_lib:
+        st.markdown(f'<div class="sp-crumb">{e(site)} &nbsp;›&nbsp; <b>{e(sharepoint.LIBRARY_NAME)}</b> '
+                    '(document library)</div>', unsafe_allow_html=True)
+        counts = {}
+        for c in tools._INDEX["chunks"]:
+            counts.setdefault(c["file"], set()).add(c["page"])
+        lib = pd.DataFrame([{"Name": f, "Type": "PDF", "Pages indexed": len(p),
+                             "Passages": sum(1 for c in tools._INDEX["chunks"] if c["file"] == f),
+                             "Used by the agent for": "Self-help steps" if "Self_Help" in f else "Policy answers"}
+                            for f, p in sorted(counts.items())])
+        st.dataframe(lib, hide_index=True, width="stretch")
+        st.markdown('<div class="dash-n">The agent answers only from these documents and cites the file and page. '
+                    'With live SharePoint, the search index is rebuilt automatically when a document in the library '
+                    'is added or changed (Microsoft Graph change notifications).</div>', unsafe_allow_html=True)
+    with t_conn:
+        c1, c2 = st.columns([1, 1.3], gap="large")
+        with c1:
+            st.markdown('<div class="section-title">Connection</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card" style="font-size:13.5px;line-height:1.9">'
+                        f'<b>Mode:</b> {e(sharepoint.mode_label())}<br>'
+                        f'<b>Site:</b> {e(sharepoint.SITE_URL)}<br>'
+                        f'<b>Tickets List:</b> {e(sharepoint.LIST_NAME)}<br>'
+                        f'<b>Updates List:</b> {e(sharepoint.UPDATES_LIST)}<br>'
+                        f'<b>Document library:</b> {e(sharepoint.LIBRARY_NAME)}<br>'
+                        f'<b>Sign-in for the app:</b> Microsoft Entra ID app registration '
+                        f'({"configured" if sharepoint.CLIENT_ID else "not configured in this demo"})<br>'
+                        f'<b>Graph permission:</b> Sites.Selected (only this one site)</div>', unsafe_allow_html=True)
+            if live and st.button("Test the SharePoint connection", icon=":material/lan:"):
+                ok, msg = sharepoint.check_connection()
+                (st.success if ok else st.error)(msg)
+            st.markdown('<div class="section-title" style="margin-top:14px">Going live takes configuration, not code</div>'
+                        '<div class="hw-intro">1. Create the two Lists with the columns on the right.<br>'
+                        '2. Register the app in Microsoft Entra ID and grant it access to this site only.<br>'
+                        '3. Put the site, list names and app ID in the settings and set SHAREPOINT_MODE to graph.<br>'
+                        '4. Run the test set, then pilot with one team.</div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown('<div class="section-title">Column mapping: agent field → SharePoint column</div>',
+                        unsafe_allow_html=True)
+            st.dataframe(pd.DataFrame([{"Agent field": f, "SharePoint column": d, "Internal name": i, "Type": ty}
+                                       for f, d, i, ty in sharepoint.COLUMNS]), hide_index=True, width="stretch",
+                         height=40 + 35 * len(sharepoint.COLUMNS))
+
+
+def page_kb():
+    st.markdown('<div class="dash-title">Knowledge base</div><div class="dash-sub">Fixes from resolved tickets become '
+                'articles the agent suggests to the next person with the same problem. IT approves every article '
+                'first.</div>', unsafe_allow_html=True)
+    arrow = '<span class="sp-arrow">→</span>'
+    st.markdown('<div class="card"><div class="sp-row">'
+                '<span class="sp-step">1. IT resolves a ticket and notes the fix</span>' + arrow +
+                '<span class="sp-step ai">2. AI drafts a KB article</span>' + arrow +
+                '<span class="sp-step list">3. IT reviews and approves</span>' + arrow +
+                '<span class="sp-step ai">4. Agent suggests it as self-help</span>' + arrow +
+                '<span class="sp-step">5. No repeat ticket</span></div></div>', unsafe_allow_html=True)
+    approved, drafts = kb.list_articles(kb.STATUS_APPROVED), kb.list_articles(kb.STATUS_DRAFT)
+    st.markdown(kpis(wide=True, items=[("Approved articles", len(approved)), ("Waiting for review", len(drafts)),
+                                       ("Times suggested by the agent", sum(a["suggested"] for a in approved)),
+                                       ("Solved without a ticket", sum(a["solved"] for a in approved))]),
+                unsafe_allow_html=True)
+
+    st.markdown(f'<div class="section-title">Waiting for review · {len(drafts)}</div>', unsafe_allow_html=True)
+    if not drafts:
+        st.caption("No drafts. When a ticket is resolved with a note on how it was fixed, the AI drafts an article "
+                   "here. You can also draft one from a resolved ticket below.")
+    for a in drafts:
+        t = db.get_ticket(a["source_ticket"]) or {"title": "", "team": ""}
+        with st.container(key=f"kbd_{a['id']}"):
+            st.markdown(f'<div class="tk-top"><span class="tk-id">{e(a["id"])} · draft from {e(a["source_ticket"])} '
+                        f'· {e(a["team"] or "")}</span><span class="badge s-waiting">Waiting for review</span></div>'
+                        f'<div class="tk-meta">Ticket: {e(t["title"])} · Fix noted by IT: “{e(a["resolution_note"])}”'
+                        f' · drafted by {e(a["created_by"])} on {e(a["created_at"])}</div>', unsafe_allow_html=True)
+            with st.form(f"kbf_{a['id']}", border=False):
+                title = st.text_input("Title", a["title"])
+                symptoms = st.text_input("Symptoms (what the employee sees)", a["symptoms"])
+                steps = st.text_area("Steps (one per line)", "\n".join(a["steps"]), height=140)
+                b1, b2, _ = st.columns([1.3, 1, 3])
+                ok = b1.form_submit_button("Approve and publish", type="primary", icon=":material/check:")
+                no = b2.form_submit_button("Reject", icon=":material/close:")
+            if ok and "(IT: write the steps" in steps:
+                st.error("Write the fix steps first: replace the placeholder line.")
+            elif ok:
+                kb.approve(a["id"], short_name(me["name"]), title, symptoms,
+                           [x.strip() for x in steps.splitlines() if x.strip()])
+                st.toast(f"{a['id']} approved: the agent will now suggest it.")
+                st.rerun()
+            if no:
+                kb.reject(a["id"], short_name(me["name"]))
+                st.rerun()
+
+    with st.expander("Draft an article from a resolved ticket"):
+        done = [t for t in db.list_tickets() if t["status"] in ("Resolved", "Closed")
+                and not kb.draft_for_ticket(t["ticket_id"])]
+        done.sort(key=lambda t: t.get("resolved_at") or "", reverse=True)
+        pick = st.selectbox("Resolved ticket", [t["ticket_id"] for t in done[:40]], key="kb_pick",
+                            format_func=lambda i: next(f"{t['ticket_id']} · {t['title']} · {t['team']}"
+                                                       for t in done if t["ticket_id"] == i))
+        note = st.text_input("How was it fixed?", key="kb_note",
+                             placeholder="e.g. Disabled and re-enabled the VPN client, then reconnected")
+        if st.button("Draft with AI", icon=":material/auto_awesome:", disabled=not (pick and note)):
+            with st.spinner("The AI is writing the draft…"):
+                new = kb.create_draft(pick, note, created_by=short_name(me["name"]))
+            st.toast(f"Draft {new} created.")
+            st.rerun()
+
+    gaps = kb.open_gaps()
+    st.markdown(f'<div class="section-title" style="margin-top:14px">Knowledge gaps · {len(gaps)} questions the agent '
+                'could not answer</div>', unsafe_allow_html=True)
+    g1, g2 = st.columns([3, 1], vertical_alignment="center")
+    g1.markdown('<div class="dash-n" style="margin:0">Questions with no answer in the documents, and self-help that did '
+                'not work. The AI groups them so IT can see which articles are missing.</div>', unsafe_allow_html=True)
+    if g2.button("Group with AI", icon=":material/auto_awesome:", disabled=not gaps, width="stretch"):
+        with st.spinner("The AI is grouping the questions…"):
+            kb.group_gaps()
+        st.rerun()
+    groups = kb.saved_groups()
+    grouped = {q["id"] for grp in groups for q in grp["questions"]}
+    new = [g for g in gaps if g["id"] not in grouped]
+    if new:                                        # questions asked after the last grouping are always shown
+        if groups:
+            st.markdown(f'<div class="section-title" style="margin-top:6px">New since the last grouping · {len(new)}'
+                        ' (click Group with AI to include them)</div>', unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame([{"Asked on": g["at"], "Question": g["question"], "Asked by": short_name(
+                                        names.get(g["user"], g["user"])), "Source": g["source"]} for g in new]),
+                     hide_index=True, width="stretch")
+    for i, grp in enumerate(groups):
+        with st.container(key=f"gap_{i}"):
+            c1, c2 = st.columns([4, 1.2], vertical_alignment="center")
+            c1.markdown(f'<div class="tk-top"><span class="tk-title">{e(grp["topic"])}</span>'
+                        f'<span class="badge s-agent">asked {len(grp["questions"])}×</span></div>'
+                        f'<div class="tk-meta">Missing article: <b>{e(grp["suggested_title"])}</b></div>'
+                        + "".join(f'<div class="hist">“{e(q["question"])}” · {e(q["at"])}</div>'
+                                  for q in grp["questions"][:3]), unsafe_allow_html=True)
+            if c2.button("Start article", key=f"gapbtn_{i}", icon=":material/edit_note:", width="stretch"):
+                new = kb.start_article_from_gap(grp, short_name(me["name"]))
+                st.toast(f"Draft {new} created: write the fix steps, then approve it.")
+                st.rerun()
+
+    st.markdown(f'<div class="section-title" style="margin-top:12px">Published articles · {len(approved)}</div>',
+                unsafe_allow_html=True)
+    if approved:
+        st.dataframe(pd.DataFrame([{"ID": a["id"], "Title": a["title"], "Team": a["team"], "From ticket": a["source_ticket"],
+                                    "Approved by": a["reviewed_by"], "Approved on": a["reviewed_at"],
+                                    "Suggested": a["suggested"], "Solved": a["solved"]} for a in approved]),
+                     hide_index=True, width="stretch")
+        show = st.selectbox("Read an article", [a["id"] for a in approved], key="kb_show",
+                            format_func=lambda i: next(f"{a['id']} · {a['title']}" for a in approved if a["id"] == i))
+        a = kb.get(show)
+        st.markdown(f'<div class="card"><div class="tk-id">{e(a["id"])} · {e(a["team"] or "")}</div>'
+                    f'<div class="tk-title" style="font-size:16px">{e(a["title"])}</div>'
+                    f'<div class="tk-meta" style="margin:4px 0 8px 0"><b>Symptoms:</b> {e(a["symptoms"])}</div>'
+                    + "".join(f'<div style="font-size:13.5px;margin:3px 0">{i}. {e(s)}</div>'
+                              for i, s in enumerate(a["steps"], 1)) +
+                    f'<div class="sp-tag" style="margin-top:8px">From ticket {e(a["source_ticket"])} · approved by '
+                    f'{e(a["reviewed_by"] or "")} · saved to SharePoint list “{e(sharepoint.KB_LIST)}”</div></div>',
+                    unsafe_allow_html=True)
+
+
+def page_incidents():
+    st.markdown('<div class="dash-title">Incidents</div><div class="dash-sub">When many people report the same problem in '
+                'a short time, it is probably one outage. Declare it once: the agent then tells everyone it is a known '
+                'issue instead of opening more tickets.</div>', unsafe_allow_html=True)
+    window, threshold = incidents.settings()
+    c1, c2, c3 = st.columns([2.6, 1.3, 1.3], vertical_alignment="center")
+    c1.markdown(f'<div class="dash-n" style="margin:0">Detection rule: {threshold} or more people, same team and '
+                f'category, within {window} minutes.</div>', unsafe_allow_html=True)
+    for col, kind, n in ((c2, "Outlook", 5), (c3, "VPN", 4)):
+        if col.button(f"Simulate {kind} outage", icon=":material/bolt:", width="stretch", key=f"sim_{kind}",
+                      help=f"Demo: {n} different employees report {kind} problems within minutes"):
+            made = incidents.simulate_outage(kind)
+            st.toast(f"{len(made)} {kind} tickets created: {', '.join(made)}")
+            st.rerun()
+
+    found = incidents.detect()
+    st.markdown(f'<div class="section-title">Possible outages · {len(found)}</div>', unsafe_allow_html=True)
+    if not found:
+        st.caption("Nothing detected right now.")
+    for i, g in enumerate(found):
+        with st.container(key=f"outage_{i}"):
+            st.markdown(f'<div class="tk-top"><span class="tk-title">{g["people"]} people · {e(g["category"])} · '
+                        f'{e(g["team"])}</span><span class="badge s-agent">in the last {g["window"]} min</span></div>'
+                        + "".join(f'<div class="hist"><b>{e(t["ticket_id"])}</b> · '
+                                  f'{e(short_name(names.get(t["requester_email"], t["requester_email"])))} · '
+                                  f'{e(t["title"])} · {e(t["created_at"][11:16])}</div>' for t in g["tickets"]),
+                        unsafe_allow_html=True)
+            with st.form(f"declare_{i}", border=False):
+                title = st.text_input("Incident title", f"{g['category']} problems for many users")
+                msg = st.text_area("Message the agent gives to employees",
+                                   f"Many people are having {g['category']} problems. The {g['team']} is working on "
+                                   "it. You don't need to raise a new ticket: we will let you know when it is fixed.",
+                                   height=80)
+                if st.form_submit_button("Declare major incident", type="primary", icon=":material/campaign:"):
+                    new = incidents.declare(title, g["team"], g["category"], msg,
+                                            [t["ticket_id"] for t in g["tickets"]], short_name(me["name"]))
+                    st.toast(f"{new} declared: {len(g['tickets'])} tickets linked. The agent now knows about it.")
+                    st.rerun()
+
+    act = incidents.active()
+    st.markdown(f'<div class="section-title" style="margin-top:12px">Active major incidents · {len(act)}</div>',
+                unsafe_allow_html=True)
+    if not act:
+        st.caption("No active incidents.")
+    for inc in act:
+        with st.container(key=f"inc_{inc['id']}"):
+            st.markdown(f'<div class="tk-top"><span class="tk-title">{e(inc["id"])} · {e(inc["title"])}</span>'
+                        f'<span class="badge s-agent">Active since {e(inc["created_at"][11:])}</span></div>'
+                        f'<div class="tk-meta">{e(inc["team"])} · linked tickets: {e(", ".join(inc["tickets"]))}</div>'
+                        f'<div class="hist">Message to employees: {e(inc["message"])}</div>', unsafe_allow_html=True)
+            st.markdown(kpis(wide=True, items=[("Linked tickets", len(inc["tickets"])),
+                                               ("People affected", inc["affected"]),
+                                               ("Told by the agent (no new ticket)", inc["via_agent"]),
+                                               ("Tickets avoided", inc["via_agent"])]), unsafe_allow_html=True)
+            with st.form(f"resolve_{inc['id']}", border=False):
+                fix = st.text_input("How was it fixed?", placeholder="e.g. VPN gateway certificate renewed; "
+                                    "users disconnect and reconnect")
+                make = st.checkbox("Create a knowledge base draft from this fix", value=True)
+                if st.form_submit_button("Resolve incident and all linked tickets", icon=":material/task_alt:"):
+                    n, draft = incidents.resolve(inc["id"], fix, short_name(me["name"]), make)
+                    st.toast(f"{inc['id']} resolved: {n} tickets resolved" + (f", KB draft {draft} created." if draft
+                                                                               else "."))
+                    st.rerun()
+    done = incidents.list_incidents(incidents.RESOLVED)
+    if done:
+        st.markdown('<div class="section-title" style="margin-top:12px">Resolved incidents</div>', unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame([{"ID": i["id"], "Title": i["title"], "Team": i["team"], "Started": i["created_at"],
+                                    "Resolved": i["resolved_at"], "Tickets": len(i["tickets"]),
+                                    "People affected": i["affected"], "Fix": i["resolution"]} for i in done]),
+                     hide_index=True, width="stretch")
+
+
 # ---------- Layout ----------
 if not is_admin:                                          # employees: chat + my tickets (unchanged)
     chat_col, side_col = st.columns([3, 2], gap="large")
@@ -1257,10 +1701,13 @@ if not is_admin:                                          # employees: chat + my
     with side_col:
         render_my_tickets()
 else:                                                     # IT admin: full-width console with a menu
-    PAGES = ["Dashboard", "Tickets", "Live chats", "Assistant", "Chats", "Audit log", "Quality & cost"]
+    PAGES = ["Dashboard", "Tickets", "Incidents", "Knowledge base", "SharePoint", "Live chats", "Assistant", "Chats",
+             "Audit log", "Quality & cost"]
     st.session_state.setdefault("nav", "Dashboard")
     if st.session_state.pop("goto_live", False):
         st.session_state.nav = "Live chats"
+    if st.session_state.pop("goto_inc", False):
+        st.session_state.nav = "Incidents"
     with st.container(key="adminnav"):
         NAV = st.segmented_control("Admin menu", PAGES, key="nav",
                                    label_visibility="collapsed") or "Dashboard"
@@ -1277,6 +1724,12 @@ else:                                                     # IT admin: full-width
             needs_attention_cards(limit=4)
     elif NAV == "Live chats":
         page_live()
+    elif NAV == "SharePoint":
+        page_sharepoint()
+    elif NAV == "Knowledge base":
+        page_kb()
+    elif NAV == "Incidents":
+        page_incidents()
     elif NAV == "Chats":
         page_chats()
     elif NAV == "Audit log":

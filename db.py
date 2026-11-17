@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS live_chats (ticket_id TEXT PRIMARY KEY, user TEXT, st
                                      requested_at TEXT, joined_at TEXT, ended_at TEXT);
 CREATE TABLE IF NOT EXISTS live_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id TEXT, at TEXT,
                                      role TEXT, sender TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS graph_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, method TEXT, path TEXT,
+                                     body TEXT, ticket_id TEXT, outcome TEXT, http_status INTEGER);
 """
 
 
@@ -74,21 +76,31 @@ def init():
             c.execute("ALTER TABLE tickets ADD COLUMN paused_hours REAL DEFAULT 0")
             c.execute("UPDATE tickets SET paused_since=? WHERE status=?", (now().isoformat(timespec='seconds'),
                                                                          PAUSE_STATUS))
-        for col in ("first_response_at", "resolved_at", "channel"):   # added for the admin dashboard
+        for col in ("first_response_at", "resolved_at", "channel", "sp_item_id"):   # dashboard + SharePoint
             if col not in columns:
                 c.execute(f"ALTER TABLE tickets ADD COLUMN {col} TEXT")
         empty = c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
     if empty:
         _seed(demo_history=True)
+    import kb                                      # knowledge base articles (kb.py)
+    kb.init()
+    import incidents                               # outage detection (incidents.py)
+    incidents.init()
 
 
 def reset(demo_history=True):
     """Delete everything and go back to the starting tickets (plus ~12 weeks of dummy history for the dashboard)."""
     with _conn() as c:
         for table in ("tickets", "history", "audit", "feedback", "usage", "self_help", "conversations",
-                      "live_chats", "live_messages"):
+                      "live_chats", "live_messages", "graph_log"):
             c.execute(f"DELETE FROM {table}")
+    import incidents
+    incidents.reset()
     _seed(demo_history)
+    import kb
+    kb.reset()
+    set_setting("kb_gap_groups", "[]")
+    set_setting("weekly_summary", "")
 
 
 _COLS = ("ticket_id", "requester_email", "title", "category", "priority", "team", "status", "created", "created_at",
@@ -166,30 +178,47 @@ def create_ticket(requester_email, title, category, priority, team, status, firs
                    now().isoformat(timespec="seconds"), channel))
         c.execute("INSERT INTO history (ticket_id, at, text) VALUES (?,?,?)",
                   (new_id, now().strftime("%Y-%m-%d %H:%M"), first_note))
+    _sp().on_create(new_id)                        # SharePoint: a new item in the IT Helpdesk List
+    _sp().on_note(new_id, first_note)
     return new_id
+
+
+def _sp():
+    import sharepoint                              # imported here to avoid a circular import
+    return sharepoint
 
 
 def add_history(ticket_id, text):
     with _conn() as c:
         c.execute("INSERT INTO history (ticket_id, at, text) VALUES (?,?,?)",
                   (ticket_id, now().strftime("%Y-%m-%d %H:%M"), redact(text)))
+    _sp().on_note(ticket_id, redact(text))
 
 
 def mark_responded(ticket_id):
     """First response from IT (for the response SLA). Only the first one counts."""
     with _conn() as c:
-        c.execute("UPDATE tickets SET first_response_at=? WHERE ticket_id=? AND first_response_at IS NULL",
-                  (now().isoformat(timespec="seconds"), ticket_id))
+        stamp = now().isoformat(timespec="seconds")
+        changed = c.execute("UPDATE tickets SET first_response_at=? WHERE ticket_id=? AND first_response_at IS NULL",
+                            (stamp, ticket_id)).rowcount
+    if changed:
+        _sp().on_update(ticket_id, {"first_response_at": stamp})
 
 
 def reopen(ticket_id):
     with _conn() as c:
-        c.execute("UPDATE tickets SET resolved_at=NULL WHERE ticket_id=?", (ticket_id,))
+        changed = c.execute("UPDATE tickets SET resolved_at=NULL WHERE ticket_id=? AND resolved_at IS NOT NULL",
+                            (ticket_id,)).rowcount
+    if changed:
+        _sp().on_update(ticket_id, {"resolved_at": None})
 
 
 def clear_waiting(ticket_id):
     with _conn() as c:
-        c.execute("UPDATE tickets SET waiting_for=NULL WHERE ticket_id=?", (ticket_id,))
+        changed = c.execute("UPDATE tickets SET waiting_for=NULL WHERE ticket_id=? AND waiting_for IS NOT NULL",
+                            (ticket_id,)).rowcount
+    if changed:
+        _sp().on_update(ticket_id, {"waiting_for": None})
 
 
 PAUSE_STATUS = "Waiting for approval"             # while waiting for the user/manager, IT's clock is paused
@@ -216,6 +245,7 @@ def update_ticket(ticket_id, **fields):
         with _conn() as c:
             sets = ", ".join(f"{k}=?" for k in fields)
             c.execute(f"UPDATE tickets SET {sets} WHERE ticket_id=?", (*fields.values(), ticket_id))
+        _sp().on_update(ticket_id, fields)          # SharePoint: update the List item's columns
 
 
 # ---------------------------------------------------------------- audit log
@@ -366,3 +396,22 @@ def list_live_messages(ticket_id):
     with _conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM live_messages WHERE ticket_id=? ORDER BY id",
                                            (ticket_id,)).fetchall()]
+
+
+# ---------------------------------------------------------------- SharePoint (Microsoft Graph) request log
+def log_graph(method, path, body, ticket_id, outcome, http_status):
+    with _conn() as c:
+        c.execute("INSERT INTO graph_log (at, method, path, body, ticket_id, outcome, http_status) "
+                  "VALUES (?,?,?,?,?,?,?)", (now().strftime("%Y-%m-%d %H:%M:%S"), method, path,
+                                            redact(json.dumps(body, ensure_ascii=False)) if body else "",
+                                            ticket_id, outcome, http_status))
+
+
+def list_graph(limit=200):
+    with _conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM graph_log ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+def set_sp_item_id(ticket_id, sp_id):
+    with _conn() as c:
+        c.execute("UPDATE tickets SET sp_item_id=? WHERE ticket_id=?", (str(sp_id), ticket_id))

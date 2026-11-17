@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 from google import genai
 import db
 import sla
+import sharepoint
+import kb
+import incidents
 
 load_dotenv()
 _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -81,9 +84,10 @@ def _short(t):
 # ======================================================================
 def search_policies(question: str) -> dict:
     """Search the company IT documents: the policies (IT security, remote work and VPN,
-    laptops and equipment) and the IT Self-Help Guide (step-by-step fixes for passwords, locked accounts,
-    MFA, printers, VPN, Outlook and Teams). Use this for 'how do I', 'what is the rule' and self-help questions.
-    Returns the 3 most relevant passages with file name and page."""
+    laptops and equipment), the IT Self-Help Guide (step-by-step fixes for passwords, locked accounts,
+    MFA, printers, VPN, Outlook and Teams) and the IT Knowledge Base (fixes approved by IT from past tickets,
+    IDs like KB-003). Use this for 'how do I', 'what is the rule' and self-help questions, and for any problem
+    the user describes. Returns the 3 most relevant passages with their source."""
     result = _client.models.embed_content(
         model=_INDEX["embed_model"], contents=[question],
         config={"task_type": "RETRIEVAL_QUERY", "output_dimensionality": _INDEX["embed_dim"]},
@@ -91,9 +95,22 @@ def search_policies(question: str) -> dict:
     db.log_usage(state["user"], "embedding", len(question) // 4 + 1, 0)
     q = np.array(result.embeddings[0].values, dtype=np.float32)
     q = q / np.linalg.norm(q)
-    top = np.argsort(_VECTORS @ q)[::-1][:3]
-    return {"passages": [{"file": _INDEX["chunks"][i]["file"], "page": _INDEX["chunks"][i]["page"],
-                          "text": _INDEX["chunks"][i]["text"]} for i in top]}
+    found = [(float(score), {"file": _INDEX["chunks"][i]["file"], "page": _INDEX["chunks"][i]["page"],
+                             "text": _INDEX["chunks"][i]["text"]})
+             for i, score in enumerate(_VECTORS @ q)]
+    for a, v in kb.approved_with_vectors(_embed_document):          # approved fixes from past tickets
+        found.append((float(v @ q), {"file": a["id"], "source": "IT Knowledge Base", "kb": True,
+                                     "text": kb.text_of(a)}))
+    found.sort(key=lambda x: x[0], reverse=True)
+    return {"passages": [p for _, p in found[:3]]}
+
+
+def _embed_document(text):
+    result = _client.models.embed_content(
+        model=_INDEX["embed_model"], contents=[text],
+        config={"task_type": "RETRIEVAL_DOCUMENT", "output_dimensionality": _INDEX["embed_dim"]})
+    db.log_usage(state["user"], "embedding", len(text) // 4 + 1, 0)
+    return list(result.embeddings[0].values)
 
 
 def lookup_employee(email: str) -> dict:
@@ -108,12 +125,14 @@ def lookup_employee(email: str) -> dict:
 def list_my_tickets() -> dict:
     """List all tickets raised by the current user, with ID, title, team, priority and status.
     Use this when the user mentions an existing problem or asks about their tickets."""
+    sharepoint.on_read("mine", requester=state["user"])
     return {"tickets": [_short(t) for t in db.list_tickets(state["user"])]}
 
 
 def check_ticket_status(ticket_id: str) -> dict:
     """Get full details and history of one ticket by its ID (for example 'T-1004').
     Employees can only open their own tickets; IT admins can open any ticket."""
+    sharepoint.on_read("one", ticket_id=ticket_id)
     t = db.get_ticket(ticket_id)
     if not t:
         return {"error": f"Ticket {ticket_id} not found"}
@@ -137,8 +156,10 @@ def create_ticket(title: str, description: str, category: str, priority: str, te
         return {"error": f"Unknown priority '{priority}'. Use one of: {', '.join(PRIORITIES)}"}
     new_id = db.create_ticket(state["user"], title, category, priority, team, "New",
                               f"Ticket created by AI agent for the user. {description}")
+    t = db.get_ticket(new_id)
     return {"created": new_id, "assigned_to": team, "priority": priority, "status": "New",
-            "response": _response(db.get_ticket(new_id))}
+            "saved_to": f"SharePoint List '{sharepoint.LIST_NAME}' (item {sharepoint.item_id(t)})",
+            "response": _response(t)}
 
 
 def add_comment(ticket_id: str, comment: str) -> dict:
@@ -178,6 +199,7 @@ def list_all_tickets() -> dict:
     response/resolution targets, plus how many tickets are already resolved or closed."""
     if not is_admin():
         return {"error": "Access denied: only IT admins can list all tickets"}
+    sharepoint.on_read("open")
     tickets = db.list_tickets()
     open_t = [t for t in tickets if t["status"] not in ("Resolved", "Closed")]
     return {"open_tickets": [dict(_short(t), requester=EMPLOYEES.get(t["requester_email"], {}).get(
@@ -209,11 +231,30 @@ def update_ticket(ticket_id: str, status: str, team: str, priority: str, note: s
     admin_name = EMPLOYEES[state["user"]]["name"]
     db.add_history(t["ticket_id"], f"Updated by {admin_name} via AI agent" + (f" ({changes})" if changes else "")
                    + (f". Note: {note}" if note else ""))
-    return {"updated": t["ticket_id"], "changes": changes or "none", "note": note}
+    result = {"updated": t["ticket_id"], "changes": changes or "none", "note": note}
+    if status in ("Resolved", "Closed") and note:          # knowledge loop: the fix becomes a draft KB article
+        draft = kb.create_draft(t["ticket_id"], note, created_by=admin_name)
+        if draft:
+            result["kb_draft"] = f"{draft} (draft knowledge base article, waiting for IT review)"
+    return result
+
+
+def report_to_incident(incident_id: str) -> dict:
+    """Use when the user's problem matches an ACTIVE MAJOR INCIDENT listed in your instructions (for example INC-001).
+    Records the user as affected so they are told when it is fixed. Do NOT create a ticket in that case."""
+    return incidents.report(incident_id, state["user"])
+
+
+def log_knowledge_gap(question: str) -> dict:
+    """Use when an IT question cannot be answered from the IT documents or the knowledge base
+    (search_policies found nothing relevant). Records the question in English so IT can write an article.
+    Then tell the user you could not find it, and offer to raise a ticket or press "Talk to a person"."""
+    kb.log_gap(state["user"], question, "agent could not answer")
+    return {"recorded": True}
 
 
 EMPLOYEE_TOOLS = [search_policies, lookup_employee, list_my_tickets, check_ticket_status, create_ticket, add_comment,
-                  close_ticket]
+                  close_ticket, report_to_incident, log_knowledge_gap]
 ADMIN_TOOLS = EMPLOYEE_TOOLS + [list_all_tickets, update_ticket]
 TOOL_MAP = {f.__name__: f for f in ADMIN_TOOLS}
 ACTION_NAMES = {"create_ticket", "add_comment", "close_ticket", "update_ticket"}
