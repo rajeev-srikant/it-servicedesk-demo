@@ -56,6 +56,8 @@ def tickets_frame(names):
             "Status": t["status"], "Stage": stage, "Category": t["category"] or "Other",
             "Channel": t.get("channel") or "Portal",
             "Requester": names.get(t["requester_email"], t["requester_email"]).split("(")[0].strip(),
+            "Department": t.get("department") or "Unassigned", "Dept team": t.get("org_team") or "",
+            "Cost center": t.get("cost_center") or "",
             "created": created, "responded": responded, "resolved": resolved, "last_update": last,
             "open": is_open, "stalled": stalled,
             "resp_known": resp_known, "resp_breach": bool(resp_breach) and resp_known,

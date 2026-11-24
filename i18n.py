@@ -301,6 +301,8 @@ JA = {
     "Reason:": "理由:",
     "Comment (optional)": "コメント（任意）",
     "Approve": "承認",
+    "Requested by {name} · {unit}. The cost is charged to this cost center.":
+        "申請者: {name} · {unit}。費用はこのコストセンターに計上されます。",
     "Reject": "却下",
     "{id} approved.": "{id} を承認しました。",
     "{id} rejected.": "{id} を却下しました。",

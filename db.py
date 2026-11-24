@@ -77,12 +77,14 @@ def init():
             c.execute("ALTER TABLE tickets ADD COLUMN paused_hours REAL DEFAULT 0")
             c.execute("UPDATE tickets SET paused_since=? WHERE status=?", (now().isoformat(timespec='seconds'),
                                                                          PAUSE_STATUS))
-        for col in ("first_response_at", "resolved_at", "channel", "sp_item_id"):   # dashboard + SharePoint
+        for col in ("first_response_at", "resolved_at", "channel", "sp_item_id",   # dashboard + SharePoint
+                    "department", "org_team", "cost_center"):                    # who asked, who pays (org.py)
             if col not in columns:
                 c.execute(f"ALTER TABLE tickets ADD COLUMN {col} TEXT")
         empty = c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
     if empty:
         _seed(demo_history=True)
+    backfill_org()
     import kb                                      # knowledge base articles (kb.py)
     kb.init()
     import incidents                               # outage detection (incidents.py)
@@ -100,6 +102,7 @@ def reset(demo_history=True):
     import incidents
     incidents.reset()
     _seed(demo_history)
+    backfill_org()
     import kb
     kb.reset()
     import catalog
@@ -177,15 +180,28 @@ def create_ticket(requester_email, title, category, priority, team, status, firs
         new_id = f"T-{max(numbers, default=1000) + 1}"
         today = now().date().isoformat()
         title, first_note = redact(title), redact(first_note)
+        import org
+        o = org.info(requester_email)              # copy of department / team / cost center at creation time
         c.execute("INSERT INTO tickets (ticket_id, requester_email, title, category, priority, team, status, "
-                  "created, created_at, channel) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  "created, created_at, channel, department, org_team, cost_center) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (new_id, requester_email, title, category, priority, team, status, today,
-                   now().isoformat(timespec="seconds"), channel))
+                   now().isoformat(timespec="seconds"), channel, o["department"], o["team"], o["cost_center"]))
         c.execute("INSERT INTO history (ticket_id, at, text) VALUES (?,?,?)",
                   (new_id, now().strftime("%Y-%m-%d %H:%M"), first_note))
     _sp().on_create(new_id)                        # SharePoint: a new item in the IT Helpdesk List
     _sp().on_note(new_id, first_note)
     return new_id
+
+
+def backfill_org():
+    """Tickets without a department (older tickets, demo data) get the requester's current department."""
+    import org
+    with _conn() as c:
+        rows = c.execute("SELECT ticket_id, requester_email FROM tickets WHERE department IS NULL").fetchall()
+        for r in rows:
+            o = org.info(r["requester_email"])
+            c.execute("UPDATE tickets SET department=?, org_team=?, cost_center=? WHERE ticket_id=?",
+                      (o["department"], o["team"], o["cost_center"], r["ticket_id"]))
 
 
 def _sp():

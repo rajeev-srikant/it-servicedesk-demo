@@ -25,6 +25,7 @@ import sharepoint
 import kb
 import incidents
 import catalog
+import org
 import insights
 
 load_dotenv()
@@ -549,7 +550,8 @@ def ticket_card(t, show_requester=False, key_prefix="tk", actions=False):
         r, res = sla.status(t), sla.resolution(t)
         pr = t["priority"]
         pr_html = f'<span class="p-{pr.lower()}">{e(tr(pr))}</span>' if pr in ("High", "Urgent") else e(tr(pr))
-        who = f'{e(short_name(names.get(t["requester_email"], t["requester_email"])))} · ' if show_requester else ""
+        who = (f'{e(short_name(names.get(t["requester_email"], t["requester_email"])))} '
+               f'({e(t.get("department") or "—")}) · ' if show_requester else "")
         st.markdown(f'<div class="tk-top"><span class="tk-id">{e(t["ticket_id"])}</span>'
                     f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(tr(t["status"]))}</span></div>'
                     f'<div class="tk-title">{e(t["title"])}</div>'
@@ -755,7 +757,7 @@ with st.sidebar:
     st.markdown(f'<div class="prof"><div class="tb-avatar">{e(initials(me["name"]))}</div><div>'
                 f'<div class="prof-n">{e(short_name(me["name"]))}</div>'
                 f'<div class="prof-d">{e(role_label)} · ID {e(me["employee_id"])}<br>'
-                f'{e(me["department"])} · {e(me["location"])}</div></div></div>', unsafe_allow_html=True)
+                f'{e(org.label(USER))}<br>{e(me["location"])}</div></div></div>', unsafe_allow_html=True)
     st.write("")
     if st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
         new_conversation()
@@ -815,7 +817,9 @@ with st.container(key="tbhead"):
                 st.rerun()
     h4.markdown(f'<div class="tb-user"><div class="tb-avatar">{e(initials(me["name"]))}</div><div>'
                 f'<div class="tb-uname">{e(short_name(me["name"]))}</div>'
-                f'<div class="tb-urole">{e(role_label)} · {e(me["department"])}</div></div></div>',
+                f'<div class="tb-urole">{e(role_label)} · {e(org.info(USER)["department"])}'
+                f'{" / " + e(org.info(USER)["team"]) if org.info(USER)["team"] != org.info(USER)["department"] else ""}'
+                '</div></div></div>',
                 unsafe_allow_html=True)
 
 
@@ -1049,6 +1053,8 @@ def render_chat():
                                       format_func=lambda x: f'{x} · {catalog.CATALOG[x]["cost"]}')
                     det = st.text_input(tr("Details"), a.get("details", ""))
                     why = st.text_area(tr("Business reason"), a.get("reason", ""), height=70)
+                    st.caption(tr("Requested by {name} · {unit}. The cost is charged to this cost center.",
+                                  name=short_name(me["name"]), unit=org.label(USER)))
                     mgr = catalog.manager_of(USER, tools.EMPLOYEES)
                     if catalog.CATALOG[it]["approval"] and mgr:
                         st.caption(tr("Needs approval from {name}. You will get a notification when they decide.",
@@ -1128,7 +1134,7 @@ def approval_cards():
                         f'<span class="badge s-waiting">{tr("Waiting for approval")}</span></div>'
                         f'<div class="tk-title">{e(a["item"])} · {e(info.get("cost", ""))}</div>'
                         f'<div class="tk-meta">{e(short_name(names.get(a["requester"], a["requester"])))} · '
-                        f'{e(a["created_at"])}</div>'
+                        f'{e(org.label(a["requester"]))} · {e(a["created_at"])}</div>'
                         f'<div class="wait"><b>{tr("Reason:")}</b> {e(a["reason"] or "—")}</div>', unsafe_allow_html=True)
             comment = st.text_input(tr("Comment (optional)"), key=f"aprc_{a['ticket_id']}")
             y, n_ = st.columns(2)
@@ -1193,7 +1199,7 @@ def page_tickets():
     teams = f2.multiselect("Team", an.TEAMS, key="flt_team", placeholder="All teams")
     stages = f3.multiselect("Stage", an.STAGES + ["Resolved"], key="flt_stage", placeholder="All stages")
     prios = f4.multiselect("Priority", tools.PRIORITIES, key="flt_prio", placeholder="All")
-    q = f5.text_input("Search", placeholder="ID, title or person", key="flt_q")
+    q = f5.text_input("Search", placeholder="ID, title, person, department or cost center", key="flt_q")
     if show == "Open":
         df = df[df.open]
     elif show == "Needs attention":
@@ -1207,10 +1213,15 @@ def page_tickets():
     if q:
         ql = q.lower()
         df = df[df.ID.str.lower().str.contains(ql, regex=False) | df.Title.str.lower().str.contains(ql, regex=False)
-                | df.Requester.str.lower().str.contains(ql, regex=False)]
+                | df.Requester.str.lower().str.contains(ql, regex=False)
+                | df.Department.str.lower().str.contains(ql, regex=False)
+                | df["Dept team"].str.lower().str.contains(ql, regex=False)
+                | df["Cost center"].str.lower().str.contains(ql, regex=False)]
     df = df.sort_values("created", ascending=False)
     view = pd.DataFrame({
-        "ID": df.ID, "Title": df.Title, "Requester": df.Requester, "Team": df.Team, "Priority": df.Priority,
+        "ID": df.ID, "Title": df.Title, "Requester": df.Requester,
+        "Department": [d if t in ("", d) else f"{d} / {t}" for d, t in zip(df.Department, df["Dept team"])],
+        "Cost center": df["Cost center"], "Team": df.Team, "Priority": df.Priority,
         "Status": df.Status,
         "SLA": ["Resolution overdue" if r.res_breach else "Response late" if r.resp_breach
                 else "Met" if not r.open else "On track" for r in df.itertuples()],

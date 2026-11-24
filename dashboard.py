@@ -266,6 +266,37 @@ def render(names):
             tooltip=["Period", alt.Tooltip("Agent share %:Q", format=".0f", title="Via agent (%)")])
         _show(lc, 150)
 
+    # ---------- Which departments raise tickets, and what their requests cost ----------
+    c7, c8 = st.columns([0.85, 1.6], gap="medium")
+    with c7, st.container(key="card_dept"):
+        _card_title("Tickets by department", f"Who is asking for help, last {days} days")
+        dep = cur.groupby("Department").size().reset_index(name="Tickets").sort_values("Tickets", ascending=False)
+        dep = dep.head(10)
+        if dep.empty:
+            st.caption("No tickets in this period.")
+        else:
+            b = alt.Chart(dep).encode(y=alt.Y("Department:N", sort="-x", title=None),
+                                      x=alt.X("Tickets:Q", title="Tickets", axis=alt.Axis(tickMinStep=1, format="d")))
+            _show(b.mark_bar(color="#2a78d6", cornerRadiusEnd=4, height=14)
+                  .encode(tooltip=["Department", "Tickets"])
+                  + b.mark_text(align="left", dx=6, color=INK, fontSize=12).encode(text="Tickets:Q"), 280)
+    with c8, st.container(key="card_bill"):
+        import catalog
+        _card_title("Request costs by cost center", "Software, access and equipment requests (all time). "
+                                                    "Rejected or cancelled requests are not charged.")
+        bill = pd.DataFrame(catalog.billing_table(db.list_tickets()))
+        if bill.empty:
+            st.caption("No requests yet. Employees can ask the agent, for example: “I need Adobe Acrobat Pro”.")
+        else:
+            st.dataframe(bill, hide_index=True, width="stretch", height=min(38 + 35 * len(bill), 280),
+                         column_config={"Monthly ¥": st.column_config.NumberColumn("Licences ¥/month", format="localized"),
+                                        "One-time ¥": st.column_config.NumberColumn("One-time ¥", format="localized")})
+            st.caption(f"Total: ¥{bill['Monthly ¥'].sum():,} per month in licences · "
+                       f"¥{bill['One-time ¥'].sum():,} one-time purchases")
+            st.download_button("Download billing report (CSV)", icon=":material/download:",
+                               data=bill.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"testbank_request_billing_{db.now():%Y%m}.csv", mime="text/csv")
+
     # ---------- Needs attention ----------
     with st.container(key="card_attn"):
         att = open_now[open_now.res_breach | open_now.resp_breach | open_now.stalled].copy()
@@ -287,9 +318,11 @@ def render(names):
             att["rank"] = att.Priority.map({"Urgent": 0, "High": 1, "Medium": 2, "Low": 3})
             att["Age (days)"] = att.age_days.round(0).astype(int)
             att = att.sort_values(["rank", "age_days"], ascending=[True, False])
-            st.dataframe(att[["ID", "Issue", "Team", "Priority", "Status", "Title", "Requester", "Age (days)"]],
+            st.dataframe(att[["ID", "Issue", "Team", "Priority", "Status", "Title", "Requester", "Department",
+                              "Age (days)"]],
                          hide_index=True, width="stretch", height=min(38 + 35 * len(att), 320))
         export = df[["ID", "Title", "Team", "Priority", "Status", "Stage", "Category", "Channel", "Requester",
+                     "Department", "Dept team", "Cost center",
                      "created", "responded", "resolved", "resp_breach", "res_breach", "stalled"]]
         st.download_button("Download all tickets (CSV)", icon=":material/download:", data=export.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"testbank_tickets_{db.now():%Y%m%d}.csv", mime="text/csv")
