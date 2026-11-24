@@ -16,6 +16,7 @@ import sla
 import sharepoint
 import kb
 import incidents
+import catalog
 
 load_dotenv()
 _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -82,18 +83,24 @@ def _short(t):
 # ======================================================================
 # READ-ONLY TOOLS (safe: they only look things up)
 # ======================================================================
+_QUERY_CACHE = {}
+
+
 def search_policies(question: str) -> dict:
     """Search the company IT documents: the policies (IT security, remote work and VPN,
     laptops and equipment), the IT Self-Help Guide (step-by-step fixes for passwords, locked accounts,
     MFA, printers, VPN, Outlook and Teams) and the IT Knowledge Base (fixes approved by IT from past tickets,
     IDs like KB-003). Use this for 'how do I', 'what is the rule' and self-help questions, and for any problem
     the user describes. Returns the 3 most relevant passages with their source."""
-    result = _client.models.embed_content(
-        model=_INDEX["embed_model"], contents=[question],
-        config={"task_type": "RETRIEVAL_QUERY", "output_dimensionality": _INDEX["embed_dim"]},
-    )
-    db.log_usage(state["user"], "embedding", len(question) // 4 + 1, 0)
-    q = np.array(result.embeddings[0].values, dtype=np.float32)
+    key = question.strip().lower()
+    if key not in _QUERY_CACHE:                    # speed: the same question is only embedded once
+        result = _client.models.embed_content(
+            model=_INDEX["embed_model"], contents=[question],
+            config={"task_type": "RETRIEVAL_QUERY", "output_dimensionality": _INDEX["embed_dim"]},
+        )
+        db.log_usage(state["user"], "embedding", len(question) // 4 + 1, 0)
+        _QUERY_CACHE[key] = result.embeddings[0].values
+    q = np.array(_QUERY_CACHE[key], dtype=np.float32)
     q = q / np.linalg.norm(q)
     found = [(float(score), {"file": _INDEX["chunks"][i]["file"], "page": _INDEX["chunks"][i]["page"],
                              "text": _INDEX["chunks"][i]["text"]})
@@ -231,12 +238,39 @@ def update_ticket(ticket_id: str, status: str, team: str, priority: str, note: s
     admin_name = EMPLOYEES[state["user"]]["name"]
     db.add_history(t["ticket_id"], f"Updated by {admin_name} via AI agent" + (f" ({changes})" if changes else "")
                    + (f". Note: {note}" if note else ""))
+    if t["requester_email"] != state["user"]:          # tell the employee (in-app notification)
+        catalog.notify(t["requester_email"], "IT updated your ticket {tid}: {changes}.", t["ticket_id"],
+                       changes=", ".join(x for x in (changes, note) if x) or "new note")
     result = {"updated": t["ticket_id"], "changes": changes or "none", "note": note}
     if status in ("Resolved", "Closed") and note:          # knowledge loop: the fix becomes a draft KB article
         draft = kb.create_draft(t["ticket_id"], note, created_by=admin_name)
         if draft:
             result["kb_draft"] = f"{draft} (draft knowledge base article, waiting for IT review)"
     return result
+
+
+def list_request_catalog() -> dict:
+    """List what employees can REQUEST (software licences, access, equipment), with the team that provides it,
+    the cost, and whether the employee's manager must approve it. Use this when the user wants something new
+    (not when something is broken)."""
+    me = EMPLOYEES.get(state["user"], {})
+    mgr = catalog.manager_of(state["user"], EMPLOYEES)
+    return {"items": [dict(name=k, **v) for k, v in catalog.CATALOG.items()],
+            "your_approving_manager": EMPLOYEES.get(mgr, {}).get("name") if mgr else None,
+            "requested_for": me.get("name")}
+
+
+def request_item(item: str, details: str, reason: str) -> dict:
+    """Request an item from the request catalogue for the current user (software, access or equipment).
+    item must be a name from list_request_catalog (for example "Adobe Acrobat Pro").
+    details: what exactly is needed (in English). reason: the business reason (in English).
+    Items that need approval are sent to the user's manager; the user is notified of the decision.
+    Use this INSTEAD of create_ticket for requests. Ask for the business reason first if the user did not give one."""
+    found = catalog.find_item(item)
+    if not found:
+        return {"error": f"'{item}' is not in the request catalogue. Items: {', '.join(catalog.CATALOG)}. "
+                         "For anything else, offer a normal ticket."}
+    return catalog.create_request(state["user"], found, details, reason, EMPLOYEES)
 
 
 def report_to_incident(incident_id: str) -> dict:
@@ -254,10 +288,10 @@ def log_knowledge_gap(question: str) -> dict:
 
 
 EMPLOYEE_TOOLS = [search_policies, lookup_employee, list_my_tickets, check_ticket_status, create_ticket, add_comment,
-                  close_ticket, report_to_incident, log_knowledge_gap]
+                  close_ticket, report_to_incident, log_knowledge_gap, list_request_catalog, request_item]
 ADMIN_TOOLS = EMPLOYEE_TOOLS + [list_all_tickets, update_ticket]
 TOOL_MAP = {f.__name__: f for f in ADMIN_TOOLS}
-ACTION_NAMES = {"create_ticket", "add_comment", "close_ticket", "update_ticket"}
+ACTION_NAMES = {"create_ticket", "add_comment", "close_ticket", "update_ticket", "request_item"}
 
 
 def tools_for(email):

@@ -161,6 +161,13 @@ def resolve(incident_id, resolution, by, make_kb=True):
     for tid in inc["tickets"]:
         db.add_history(tid, f"{inc['team']}: major incident {incident_id} resolved. {resolution}")
         db.update_ticket(tid, status="Resolved")
+    import catalog                                     # tell everyone affected (in-app notification)
+    with db._conn() as c:
+        people = {r[0] for r in c.execute("SELECT user FROM incident_reports WHERE incident_id=?", (incident_id,))}
+    people |= {t["requester_email"] for t in (db.get_ticket(x) for x in inc["tickets"]) if t}
+    for user in people:
+        catalog.notify(user, "Fixed: {title} ({inc}). {fix}", None, title=inc["title"], inc=incident_id,
+                       fix=resolution)
     draft = None
     if make_kb and inc["tickets"] and resolution.strip():
         import kb

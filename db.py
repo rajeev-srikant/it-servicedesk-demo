@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS live_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                                      role TEXT, sender TEXT, text TEXT);
 CREATE TABLE IF NOT EXISTS graph_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, method TEXT, path TEXT,
                                      body TEXT, ticket_id TEXT, outcome TEXT, http_status INTEGER);
+CREATE TABLE IF NOT EXISTS timings (at TEXT, user TEXT, seconds REAL, model TEXT, lang TEXT);
 """
 
 
@@ -86,6 +87,8 @@ def init():
     kb.init()
     import incidents                               # outage detection (incidents.py)
     incidents.init()
+    import catalog
+    catalog.init()
 
 
 def reset(demo_history=True):
@@ -99,6 +102,8 @@ def reset(demo_history=True):
     _seed(demo_history)
     import kb
     kb.reset()
+    import catalog
+    catalog.reset()
     set_setting("kb_gap_groups", "[]")
     set_setting("weekly_summary", "")
 
@@ -415,3 +420,19 @@ def list_graph(limit=200):
 def set_sp_item_id(ticket_id, sp_id):
     with _conn() as c:
         c.execute("UPDATE tickets SET sp_item_id=? WHERE ticket_id=?", (str(sp_id), ticket_id))
+
+
+# ---------------------------------------------------------------- how long answers take (speed check)
+def log_timing(user, seconds, model, lang):
+    with _conn() as c:
+        c.execute("INSERT INTO timings VALUES (?,?,?,?,?)",
+                  (now().strftime("%Y-%m-%d %H:%M:%S"), user, round(seconds, 2), model, lang))
+
+
+def timing_stats(last=50):
+    with _conn() as c:
+        rows = [r[0] for r in c.execute("SELECT seconds FROM timings ORDER BY rowid DESC LIMIT ?", (last,))]
+    if not rows:
+        return None
+    rows.sort()
+    return {"count": len(rows), "median": rows[len(rows) // 2], "slowest": rows[-1], "fastest": rows[0]}

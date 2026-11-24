@@ -4,6 +4,10 @@ import html
 import io
 import uuid
 import datetime
+import re
+import time
+
+from i18n import tr, tr_sla, EXAMPLES
 from urllib.parse import unquote
 from PIL import Image
 import pandas as pd
@@ -20,6 +24,7 @@ import dashboard
 import sharepoint
 import kb
 import incidents
+import catalog
 import insights
 
 load_dotenv()
@@ -61,6 +66,12 @@ button, [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-prima
 .st-key-tbhead [data-testid="stHorizontalBlock"] { min-height:44px; align-items:center; }
 .st-key-tbhead .tb-user { white-space:nowrap; line-height:1.35; }
 .st-key-tbhead [data-testid="stMarkdownContainer"] p { margin:0; }
+.st-key-langbox [data-baseweb="select"] > div { min-height:34px; font-size:13px; }
+.st-key-bell button { min-height:34px; padding:0 10px; }
+.note-item { font-size:13px; line-height:1.45; padding:8px 0; border-bottom:1px solid var(--line); min-width:300px; }
+.note-item span { display:block; font-size:11.5px; color:var(--ink2); }
+.note-item.note-new { font-weight:600; }
+.welcome [data-testid="stHeaderActionElements"], .welcome h3 a { display:none !important; }
 .st-key-sp_badge button { min-height:0 !important; padding:3px 10px !important; background:var(--navy-l) !important;
   border:1px solid #C9D7E8 !important; color:var(--navy) !important; border-radius:3px !important; }
 .st-key-sp_badge button p { font-size:12px !important; }
@@ -101,6 +112,7 @@ button, [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-prima
 .ap-head { font-weight:600; color:var(--ink); font-size:15px; margin-bottom:2px; }
 .ap-sub { color:var(--ink2); font-size:13px; margin-bottom:6px; }
 
+[class*="st-key-apr_"] { background:#fff; border:1px solid var(--line); border-left:3px solid #6B4FBB; border-radius:4px; padding:12px 16px; margin-bottom:8px; }
 [class*="st-key-tk"] { background:#fff; border:1px solid var(--line); border-left:3px solid var(--navy); border-radius:4px;
   padding:10px 14px 4px 14px; margin-bottom:4px; }
 .tk-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:2px; gap:8px; }
@@ -240,7 +252,7 @@ button[data-variant="segmented_control"][aria-checked="true"] { background:var(-
 .st-key-adminnav [data-testid="stButtonGroup"] > div { gap:4px !important; }
 .st-key-adminnav button { background:transparent !important; border:none !important; border-radius:0 !important;
   border-bottom:2px solid transparent !important; color:var(--ink2) !important; font-size:14px !important;
-  padding:8px 14px !important; box-shadow:none !important; margin-bottom:-1px; }
+  padding:8px 10px !important; box-shadow:none !important; margin-bottom:-1px; }
 .st-key-adminnav button:hover { color:var(--ink) !important; }
 .st-key-adminnav button[aria-checked="true"] { background:transparent !important; color:var(--navy) !important; font-weight:600 !important;
   border-bottom-color:var(--navy) !important; }
@@ -262,7 +274,7 @@ def short_name(name):
 
 
 def login_card(text):
-    st.markdown(f'<div class="login"><div class="tb-logo">TB</div><h2>{BRAND} IT Service Desk</h2>'
+    st.markdown(f'<div class="login"><div class="tb-logo">TB</div><h2>{BRAND} {tr("IT Service Desk")}</h2>'
                 f'<p>{text}</p></div>', unsafe_allow_html=True)
 
 
@@ -315,9 +327,9 @@ def new_conversation():
 
 if GOOGLE:
     if not st.user.is_logged_in:
-        login_card("Sign in with your Google account to continue.")
+        login_card(tr("Sign in with your Google account to continue."))
         _, mid, _ = st.columns([1, 1, 1])
-        mid.button("Sign in with Google", type="primary", width="stretch", on_click=st.login)
+        mid.button(tr("Sign in with Google"), type="primary", width="stretch", on_click=st.login)
         st.stop()
     email = st.user.email.lower()
     tools.register_user(email, st.user.get("name"), admin=email in ADMIN_EMAILS)
@@ -327,15 +339,15 @@ if GOOGLE:
 else:
     APP_PASSWORD = os.getenv("APP_PASSWORD")
     if APP_PASSWORD and not st.session_state.get("signed_in"):
-        login_card("Sign in to the demo environment with the access code you were given.")
+        login_card(tr("Sign in to the demo environment with the access code you were given."))
         _, mid, _ = st.columns([1, 1.2, 1])
         with mid:
-            entered = st.text_input("Access code", type="password")
+            entered = st.text_input(tr("Access code"), type="password")
             if entered:
                 if entered == APP_PASSWORD:
                     st.session_state.signed_in = True
                     st.rerun()
-                st.error("That access code is not correct.")
+                st.error(tr("That access code is not correct."))
         st.stop()
     if "user" not in st.session_state:
         st.session_state.user = "rajeev@testbank.com"
@@ -344,7 +356,8 @@ else:
 USER = st.session_state.user
 me = tools.EMPLOYEES[USER]
 is_admin = tools.is_admin(USER)
-role_label = "IT Admin" if is_admin else "Employee"
+role_label = tr("IT Admin") if is_admin else tr("Employee")
+LANG = st.session_state.get("lang", "en")     # "en" or "ja", chosen in the language box at the top
 names = {p["email"]: p["name"] for p in tools.EMPLOYEES.values()}
 st.session_state.setdefault("feedback_saved", {})
 
@@ -363,16 +376,16 @@ def last_question():
 
 def process(step_fn):
     """Runs the agent while showing each step live, then stores the answer or the pending action."""
-    with st.status("Working on it…", expanded=True) as status:
+    started = time.time()
+    with st.spinner(tr("Working on it…")):          # no step-by-step progress: just a short waiting message
         try:
-            out = step_fn(lambda label: status.write(label))
-            status.update(label="Done", state="complete", expanded=False)
+            out = step_fn(lambda label: None)
+            db.log_timing(USER, time.time() - started, agent.CHAT_MODEL, LANG)
         except Exception as ex:
-            status.update(label="Something went wrong", state="error")
             msg = str(ex)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                msg = "The AI service is busy or the usage limit was reached. Please try again in a minute."
-            out = {"type": "answer", "text": f"Sorry, something went wrong: {msg}",
+                msg = tr("The AI service is busy or the usage limit was reached. Please try again in a minute.")
+            out = {"type": "answer", "text": tr("Sorry, something went wrong: {msg}", msg=msg),
                    "trace": {"steps": [], "sources": []}}
     if out["type"] == "pending":
         st.session_state.pending = out
@@ -385,9 +398,12 @@ def process(step_fn):
                 kb.count(src.split(" · ")[0], "suggested")
         is_self_help = not emails and (any(x.startswith(("Self_Help_Guide", "KB-")) for x in sources) or
                                        (searched_self_help and ("solve" in out["text"].lower() or "解決" in out["text"])))
+        offers_ticket = not emails and not is_self_help and (
+            out["trace"].get("offer_ticket") or OFFER_WORDS.search(out["text"]) is not None)
         st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": out["text"],
                                          "steps": out["trace"]["steps"], "sources": sources, "emails": emails,
                                          "self_help": "ask" if is_self_help else None,
+                                         "offer": "ask" if offers_ticket else None,
                                          "kb": out["trace"].get("kb", []),
                                          "question": last_question()})
 
@@ -408,13 +424,35 @@ def shrink_image(uploaded):
 
 
 def ask(prompt, image=None):
-    prompt = prompt or "Here is a screenshot of my problem."
+    prompt = prompt or tr("Here is a screenshot of my problem.")
     st.session_state.display.append({"id": uuid.uuid4().hex, "role": "user", "text": prompt, "image": image})
     parts = [types.Part.from_text(text=prompt)]
     if image:                                         # the AI can "see" the screenshot
         parts.append(types.Part.from_bytes(data=image, mime_type="image/png"))
     st.session_state.contents.append(types.Content(role="user", parts=parts))
-    process(lambda on_step: agent.run(client, st.session_state.contents, USER, on_step))
+    process(lambda on_step: agent.run(client, st.session_state.contents, USER, on_step, lang=LANG))
+
+
+# The AI asked "Shall I raise a ticket?": show clear buttons instead of making the user type an answer
+OFFER_WORDS = re.compile(r"raise (a|an|the)?\s*(support |new |IT )?ticket\?|create (a|an)?\s*(support |new )?ticket\?|"
+                         r"チケットを(作成|起票|発行)しましょうか|チケットを(作成|起票)しますか", re.I)
+
+
+def ticket_offer_answer(m, choice):
+    """The user clicked one of the buttons under "Would you like me to raise a ticket?"."""
+    m["offer"] = choice
+    db.log_audit(USER, "ticket_offer_button", {"question": m.get("question", "")}, {"choice": choice}, "user action")
+    if choice == "yes":
+        ask(tr("Yes, please raise a ticket for this."))
+    elif choice == "person":
+        talk_to_person()
+    else:
+        text = tr("No problem, I won't raise a ticket. If you need anything else, just ask.")
+        for role, t_ in (("user", tr("No, thanks.")), ("model", text)):
+            st.session_state.contents.append(types.Content(role=role, parts=[types.Part.from_text(text=t_)]))
+        st.session_state.display.append({"id": uuid.uuid4().hex, "role": "user", "text": tr("No, thanks.")})
+        st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": text, "steps": [],
+                                         "sources": [], "emails": [], "question": m.get("question", "")})
 
 
 def self_help_answer(m, solved):
@@ -428,21 +466,21 @@ def self_help_answer(m, solved):
                 kb.count(src.split(" · ")[0], "solved")
     db.log_audit(USER, "self_help_result", {"question": m.get("question", "")}, {"outcome": outcome}, "user action")
     if solved:
-        text = "Great, I'm glad that's sorted! No ticket needed. If anything else comes up, just ask."
-        for role, t in (("user", "Yes, that solved it."), ("model", text)):
+        text = tr("Great, I'm glad that's sorted! No ticket needed. If anything else comes up, just ask.")
+        for role, t in (("user", tr("Yes, that solved it.")), ("model", text)):
             st.session_state.contents.append(types.Content(role=role, parts=[types.Part.from_text(text=t)]))
-        st.session_state.display.append({"id": uuid.uuid4().hex, "role": "user", "text": "Yes, that solved it."})
+        st.session_state.display.append({"id": uuid.uuid4().hex, "role": "user", "text": tr("Yes, that solved it.")})
         st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": text, "steps": [],
                                          "sources": [], "emails": [], "question": m.get("question", "")})
     else:
         kb.log_gap(USER, m.get("question", ""), "self-help did not solve it")
-        ask("That didn't solve my problem. Please raise a ticket for me.")
+        ask(tr("That didn't solve my problem. Please raise a ticket for me."))
 
 
 def decide(confirmed, final_args=None):
     p = st.session_state.pending
     st.session_state.pending = None
-    process(lambda on_step: agent.resume(client, st.session_state.contents, p, confirmed, final_args, USER, on_step))
+    process(lambda on_step: agent.resume(client, st.session_state.contents, p, confirmed, final_args, USER, on_step, lang=LANG))
 
 
 def talk_to_person():
@@ -459,9 +497,9 @@ def talk_to_person():
         db.add_live_message(tid, "before_" + ("user" if m["role"] == "user" else "ai"), "", m["text"])
     st.session_state.live_tid = tid
     db.log_audit(USER, "talk_to_person", {"button": "Talk to a person"}, {"created": tid}, "user action")
-    text = (f"I've passed our conversation to the Service Desk as ticket **{tid}**. Please stay on this page: "
-            "a member of the IT team will join this chat shortly. They can see our conversation, so you won't "
-            "need to repeat anything. If you leave, they will follow up through the ticket.")
+    text = tr("I've passed our conversation to the Service Desk as ticket **{tid}**. Please stay on this page: "
+              "a member of the IT team will join this chat shortly. They can see our conversation, so you won't "
+              "need to repeat anything. If you leave, they will follow up through the ticket.", tid=tid)
     st.session_state.contents.append(types.Content(role="model", parts=[types.Part.from_text(text=text)]))
     st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "text": text,
                                      "steps": [f"Handed over to the Service Desk ({tid})"], "sources": [],
@@ -478,30 +516,30 @@ STATUS_CLASS = {"New": "s-new", "In progress": "s-progress", "Waiting for approv
 
 def waiting_text(t):
     if t["status"] == "Waiting for approval":
-        return t.get("waiting_for") or "An approval (see the history for details)"
+        return t.get("waiting_for") or tr("An approval (see the history for details)")
     if t["status"] == "Waiting for agent":
-        return "A Service Desk agent to contact you"
+        return tr("A Service Desk agent to contact you")
     return None
 
 
 def my_ticket_action(kind, t, text):
     """The employee updates or closes their own ticket with the buttons on the card (no AI involved)."""
     if t["requester_email"] != USER or t["status"] in ("Resolved", "Closed"):
-        st.toast("You can only change your own open tickets.")
+        st.toast(tr("You can only change your own open tickets."))
         return
     if kind == "update":
         db.add_history(t["ticket_id"], f"Update from the user: {text}")
         tools.resume_if_waiting(t)
         db.log_audit(USER, "add_update (button)", {"ticket_id": t["ticket_id"], "update": text},
                      {"updated": t["ticket_id"]}, "user action")
-        st.toast(f"Update added to {t['ticket_id']}.")
+        st.toast(tr("Update added to {id}.", id=t['ticket_id']))
     else:
         db.update_ticket(t["ticket_id"], status="Closed")
         db.clear_waiting(t["ticket_id"])
         db.add_history(t["ticket_id"], f"Closed by the user. Reason: {text or 'not given'}")
         db.log_audit(USER, "close_ticket (button)", {"ticket_id": t["ticket_id"], "reason": text},
                      {"closed": t["ticket_id"]}, "user action")
-        st.toast(f"{t['ticket_id']} has been closed.")
+        st.toast(tr("{id} has been closed.", id=t['ticket_id']))
     st.rerun()
 
 
@@ -510,34 +548,33 @@ def ticket_card(t, show_requester=False, key_prefix="tk", actions=False):
     with st.container(key=f"{key_prefix}_{t['ticket_id']}"):
         r, res = sla.status(t), sla.resolution(t)
         pr = t["priority"]
-        pr_html = f'<span class="p-{pr.lower()}">{e(pr)}</span>' if pr in ("High", "Urgent") else e(pr)
+        pr_html = f'<span class="p-{pr.lower()}">{e(tr(pr))}</span>' if pr in ("High", "Urgent") else e(tr(pr))
         who = f'{e(short_name(names.get(t["requester_email"], t["requester_email"])))} · ' if show_requester else ""
         st.markdown(f'<div class="tk-top"><span class="tk-id">{e(t["ticket_id"])}</span>'
-                    f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(t["status"])}</span></div>'
+                    f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(tr(t["status"]))}</span></div>'
                     f'<div class="tk-title">{e(t["title"])}</div>'
-                    f'<div class="tk-meta">{who}{e(t["team"])} · {pr_html} priority · Opened {e(t["created"])}</div>'
-                    f'<div class="sp-tag">SharePoint · {e(sharepoint.LIST_NAME)} · item {e(sharepoint.item_id(t))}</div>'
-                    f'<div><span class="sla sla-{r["state"]}">{e(r["label"])}</span> '
-                    + (f'<span class="sla sla-{res["state"]}">{e(res["label"])}</span>' if res["label"] else "")
-                    + f'</div><div class="sla-t">{e(sla.targets_text(t))}</div>'
-                    + (f'<div class="wait"><b>Waiting for:</b> {e(waiting_text(t))}</div>' if waiting_text(t) else ""),
+                    f'<div class="tk-meta">{who}' + tr("{team} · {pr} priority · Opened {when}", team=e(t["team"]), pr=pr_html, when=e(t["created"])) + '</div>'
+                    f'<div><span class="sla sla-{r["state"]}">{e(tr_sla(r["label"]))}</span> '
+                    + (f'<span class="sla sla-{res["state"]}">{e(tr_sla(res["label"]))}</span>' if res["label"] else "")
+                    + f'</div><div class="sla-t">{e(tr_sla(sla.targets_text(t)))}</div>'
+                    + (f'<div class="wait"><b>{tr("Waiting for:")}</b> {e(waiting_text(t))}</div>' if waiting_text(t) else ""),
                     unsafe_allow_html=True)
         if actions and t["status"] not in ("Resolved", "Closed"):
             b1, b2 = st.columns(2)
-            with b1.popover("Add update", icon=":material/edit_note:"):
+            with b1.popover(tr("Add update"), icon=":material/edit_note:"):
                 with st.form(f"upd_{key_prefix}_{t['ticket_id']}", border=False, clear_on_submit=True):
-                    upd = st.text_area("Your update", placeholder="e.g. My manager approved this by email today.",
+                    upd = st.text_area(tr("Your update"), placeholder=tr("e.g. My manager approved this by email today."),
                                        height=80)
-                    if st.form_submit_button("Add update", type="primary") and upd.strip():
+                    if st.form_submit_button(tr("Add update"), type="primary") and upd.strip():
                         my_ticket_action("update", t, upd.strip())
-            with b2.popover("Close ticket", icon=":material/task_alt:"):
+            with b2.popover(tr("Close ticket"), icon=":material/task_alt:"):
                 with st.form(f"cls_{key_prefix}_{t['ticket_id']}", border=False):
-                    reason = st.text_input("Reason (optional)", placeholder="e.g. It works again")
-                    st.caption("Close this ticket if you no longer need help.")
-                    if st.form_submit_button("Close ticket", type="primary"):
+                    reason = st.text_input(tr("Reason (optional)"), placeholder=tr("e.g. It works again"))
+                    st.caption(tr("Close this ticket if you no longer need help."))
+                    if st.form_submit_button(tr("Close ticket"), type="primary"):
                         my_ticket_action("close", t, reason.strip())
         n = len(t["history"])
-        with st.expander(f"History ({n} update{'s' if n != 1 else ''})"):
+        with st.expander(tr("History ({n} updates)", n=n)):
             st.markdown("".join(f'<div class="hist"><b>{e(h["at"])}</b> · {e(h["text"])}</div>'
                                 for h in reversed(t["history"])), unsafe_allow_html=True)
 
@@ -552,39 +589,42 @@ def email_preview(kind, ticket_id):
     r, res = sla.status(t), sla.resolution(t)
     tid, title = t["ticket_id"], t["title"]
     subject, intro = {
-        "created": (f"[{tid}] We've received your request: {title}",
+        "created": ("[{tid}] We've received your request: {title}",
                     "Thank you for contacting the IT Service Desk. We have received your request and it has been "
                     "assigned to the team below."),
-        "updated": (f"[{tid}] Your update has been added",
+        "updated": ("[{tid}] Your update has been added",
                     "We've added your update to the ticket below. The assigned team has been notified."),
-        "admin_update": (f"[{tid}] Your ticket has been updated",
+        "admin_update": ("[{tid}] Your ticket has been updated",
                          "The IT team has updated your ticket. Here are the latest details."),
-        "closed": (f"[{tid}] Your ticket has been closed",
+        "closed": ("[{tid}] Your ticket has been closed",
                    "As you requested, we have closed your ticket. If the problem comes back, just ask the virtual "
                    "agent and we'll help again."),
-        "handoff": (f"[{tid}] A member of the IT team will contact you",
+        "handoff": ("[{tid}] A member of the IT team will contact you",
                     "You asked to talk to a person. Your conversation has been passed to the Service Desk, "
                     "and someone will contact you soon. You won't need to repeat anything."),
     }[kind]
+    subject, intro = tr(subject, tid=tid, title=title), tr(intro)       # the email in the user's language
     last = t["history"][-1]["text"] if t["history"] else ""
-    rows = [("Ticket", tid), ("Title", title), ("Status", t["status"]), ("Priority", t["priority"]),
+    rows = [("Ticket", tid), ("Title", title), ("Status", tr(t["status"])), ("Priority", tr(t["priority"])),
             ("Assigned to", t["team"]), ("First response by", f'{r["due"]} (JST)'),
-            ("Resolve by", "Paused while waiting for approval" if res["state"] == "paused"
+            ("Resolve by", tr("Paused while waiting for approval") if res["state"] == "paused"
              else f'{res["due"]} (JST)' if res["due"] else "—"),
-            ("Service targets", sla.targets_text(t))]
+            ("Service targets", tr_sla(sla.targets_text(t)))]
     if kind in ("updated", "admin_update", "closed"):
         rows.append(("Latest update", last[:200]))
-    table = "".join(f"<tr><td>{e(k)}</td><td>{e(str(v))}</td></tr>" for k, v in rows)
-    with st.expander(f"Email preview · to {t['requester_email']}"):
-        st.markdown(f'<div class="mail"><div class="mail-h"><span class="mail-tag">PREVIEW ONLY · NOT SENT</span><br>'
-                    f'<b>From:</b> TestBank IT Service Desk &lt;it-servicedesk@testbank.com&gt;<br>'
-                    f'<b>To:</b> {e(person["name"])} &lt;{e(t["requester_email"])}&gt;<br>'
-                    f'<b>Subject:</b> {e(subject)}</div>'
-                    f'<div class="mail-b">Dear {e(first)},<br><br>{e(intro)}<table>{table}</table>'
-                    'You can check this ticket at any time in the TestBank IT Service Desk.<br><br>'
-                    'Kind regards,<br>TestBank IT Service Desk</div>'
-                    '<div class="mail-f">This is an automated message. Please do not reply to this email. '
-                    'Never share your password with anyone, including IT.</div></div>', unsafe_allow_html=True)
+    table = "".join(f"<tr><td>{e(tr(k))}</td><td>{e(str(v))}</td></tr>" for k, v in rows)
+    desk = f'TestBank {tr("IT Service Desk")}'
+    with st.expander(tr("Email preview · to {to}", to=t['requester_email'])):
+        st.markdown(f'<div class="mail"><div class="mail-h"><span class="mail-tag">{tr("PREVIEW ONLY · NOT SENT")}</span><br>'
+                    f'<b>{tr("From:")}</b> {e(desk)} &lt;it-servicedesk@testbank.com&gt;<br>'
+                    f'<b>{tr("To:")}</b> {e(person["name"])} &lt;{e(t["requester_email"])}&gt;<br>'
+                    f'<b>{tr("Subject:")}</b> {e(subject)}</div>'
+                    f'<div class="mail-b">{e(tr("Dear {name},", name=first))}<br><br>{e(intro)}<table>{table}</table>'
+                    + e(tr("You can check this ticket at any time in the TestBank IT Service Desk.")) + '<br><br>'
+                    + e(tr("Kind regards,")) + f'<br>{e(desk)}</div>'
+                    '<div class="mail-f">' + e(tr("This is an automated message. Please do not reply to this email. "
+                                                 "Never share your password with anyone, including IT.")) + '</div></div>',
+                    unsafe_allow_html=True)
 
 
 def latest_test_result():
@@ -646,16 +686,16 @@ BADGES = {"code": ("Built into the software", "hw-code"), "ai": ("AI rule · che
           "process": ("Team process", "hw-test")}
 
 
-@st.dialog("How the TestBank virtual agent works", width="large")
+@st.dialog(tr("How the TestBank virtual agent works"), width="large")
 def how_it_works():
     test, test_when = latest_test_result()
     totals = db.usage_totals()
     calls = totals.get("chat", {}).get("calls", 0)
     per_call = f"≈ ₹{agent.estimated_cost_usd(totals) / calls * agent.USD_TO_INR:.2f}" if calls else "≈ ₹0.2"
-    overview, safety, limits = st.tabs(["How it works", "Safety rules", "Limits of this demo"])
+    overview, safety, limits = st.tabs([tr("How it works"), tr("Safety rules"), tr("Limits of this demo")])
 
     with overview:
-        box = lambda title, sub, cls="": f'<div class="hw-box {cls}"><b>{title}</b><span>{sub}</span></div>'
+        box = lambda title, sub, cls="": f'<div class="hw-box {cls}"><b>{tr(title)}</b><span>{tr(sub)}</span></div>'
         st.markdown(
             '<div class="hw-flow">'
             + box("Employee", "asks in English or 日本語")
@@ -665,23 +705,23 @@ def how_it_works():
             + box("Tools", "our software · does the work", "hw-tools")
             + '<div class="hw-arrow">→</div>'
             + box("Tickets &amp; documents", "database · IT policies")
-            + '</div><div class="hw-loop">Results go back to the AI, which decides the next step · '
-            + 'the employee confirms every change</div>', unsafe_allow_html=True)
+            + '</div><div class="hw-loop">' + tr("Results go back to the AI, which decides the next step · "
+                                                 "the employee confirms every change") + '</div>', unsafe_allow_html=True)
         c1, c2 = st.columns(2)
-        c1.markdown("##### What the AI does\n"
-                    "- Understands requests in plain English or Japanese, and reads screenshots\n"
-                    "- Finds answers in IT policies and the self-help guide, with sources\n"
-                    "- Decides the next step: look up, offer self-help, or prepare a ticket\n"
-                    "- Picks the right team and priority, and writes clear tickets")
-        c2.markdown("##### What normal software does\n"
-                    "- Creates, updates and closes tickets, only after confirmation\n"
-                    "- Checks who may see and change what\n"
-                    "- Response-time targets, overdue alerts, email previews\n"
-                    "- Audit log, feedback, self-help and cost tracking")
+        c1.markdown(tr("##### What the AI does\n"
+                       "- Understands requests in plain English or Japanese, and reads screenshots\n"
+                       "- Finds answers in IT policies and the self-help guide, with sources\n"
+                       "- Decides the next step: look up, offer self-help, or prepare a ticket\n"
+                       "- Picks the right team and priority, and writes clear tickets"))
+        c2.markdown(tr("##### What normal software does\n"
+                       "- Creates, updates and closes tickets, only after confirmation\n"
+                       "- Checks who may see and change what\n"
+                       "- Response-time targets, overdue alerts, email previews\n"
+                       "- Audit log, feedback, self-help and cost tracking"))
         tiles = [("Automatic test set", test, test_when), ("Cost per AI request", per_call, "estimate"),
                  ("AI model", "Google Gemini", "flash")]
         st.markdown('<div class="kpis" style="grid-template-columns:repeat(3,1fr)">' + "".join(
-            f'<div class="kpi"><div class="kpi-v">{e(v)}</div><div class="kpi-l">{e(l)} · {e(n)}</div></div>'
+            f'<div class="kpi"><div class="kpi-v">{e(v)}</div><div class="kpi-l">{e(tr(l))} · {e(tr(n))}</div></div>'
             for l, v, n in tiles) + "</div>", unsafe_allow_html=True)
 
     with safety:
@@ -717,31 +757,31 @@ with st.sidebar:
                 f'<div class="prof-d">{e(role_label)} · ID {e(me["employee_id"])}<br>'
                 f'{e(me["department"])} · {e(me["location"])}</div></div></div>', unsafe_allow_html=True)
     st.write("")
-    if st.button("New conversation", icon=":material/add:", type="primary", width="stretch", key="new_side"):
+    if st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
         new_conversation()
         st.rerun()
     if GOOGLE:
-        st.button("Sign out", width="stretch", on_click=st.logout)
+        st.button(tr("Sign out"), width="stretch", on_click=st.logout)
     else:
         listed = [p["email"] for p in tools.EMPLOYEES.values() if p.get("listed", True) or p["email"] == USER]
-        chosen = st.selectbox("Switch user (demo only)", listed, index=listed.index(USER),
+        chosen = st.selectbox(tr("Switch user (demo only)"), listed, index=listed.index(USER),
                               format_func=lambda m: names[m])
         if chosen != USER:
             st.session_state.user = chosen
             new_conversation()
             st.rerun()
-    if is_admin and st.button("Reset demo data", icon=":material/restart_alt:", width="stretch",
+    if is_admin and st.button(tr("Reset demo data"), icon=":material/restart_alt:", width="stretch",
                               help="Deletes all new tickets, logs and feedback, and restores the starting tickets."):
         db.reset()
         new_conversation()
         st.rerun()
     st.write("")
-    if st.button("How it works & safety", icon=":material/verified_user:", width="stretch", key="how"):
+    if st.button(tr("How it works & safety"), icon=":material/verified_user:", width="stretch", key="how"):
         how_it_works()
-    st.markdown('<div class="side-foot">Demo environment with dummy data.<br>'
-                'Actions only change demo tickets.<br>AI model: Google Gemini<br>'
-                + (f'Conversations are saved for {RETENTION_DAYS} days for quality and audit.' if HISTORY_ON
-                   else 'Conversations are not saved.') + '</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="side-foot">{tr("Demo environment with dummy data.")}<br>'
+                f'{tr("Actions only change demo tickets.")}<br>{tr("AI model: Google Gemini")}<br>'
+                + (tr("Conversations are saved for {days} days for quality and audit.", days=RETENTION_DAYS)
+                   if HISTORY_ON else tr("Conversations are not saved.")) + '</div>', unsafe_allow_html=True)
 
 # ---------- Top bar ----------
 def go_sharepoint(view=None):
@@ -752,18 +792,27 @@ def go_sharepoint(view=None):
 
 
 with st.container(key="tbhead"):
-    h1, h2, h3, h4 = st.columns([3.3, 1.3, 2.2, 1.8], vertical_alignment="center", gap="small")
+    h1, h2, h3, hb, h4 = st.columns([3.4, 1.3, 1.3, 0.8, 2.0], vertical_alignment="center", gap="small")
     h1.markdown(f'<div class="tb-brand"><div class="tb-logo">TB</div>'
-                f'<div class="tb-title">{BRAND}<span>IT Service Desk</span></div></div>', unsafe_allow_html=True)
-    h2.markdown('<div style="text-align:right"><span class="tb-env">Demo environment</span></div>',
+                f'<div class="tb-title">{BRAND}<span>{tr("IT Service Desk")}</span></div></div>', unsafe_allow_html=True)
+    h2.markdown(f'<div style="text-align:right"><span class="tb-env">{tr("Demo environment")}</span></div>',
                 unsafe_allow_html=True)
-    if is_admin:                                   # the admin can click the badge to open the SharePoint page
-        h3.button(sharepoint.mode_label(), key="sp_badge", icon=":material/open_in_new:", on_click=go_sharepoint,
-                  help="Open the SharePoint integration page", width="stretch")
-    else:
-        h3.markdown(f'<div style="text-align:center"><span class="tb-sp" title="Tickets are saved as items of the '
-                    f'SharePoint List {e(sharepoint.LIST_NAME)}">{e(sharepoint.mode_label())}</span></div>',
-                    unsafe_allow_html=True)
+    with h3, st.container(key="langbox"):        # language switch: English / 日本語
+        st.selectbox("Language", ["en", "ja"], key="lang", label_visibility="collapsed",
+                     format_func=lambda x: "English" if x == "en" else "日本語")
+    with hb, st.container(key="bell"):              # in-app notifications (nothing is sent outside the app)
+        unread = catalog.unread_count(USER)
+        with st.popover(str(unread) if unread else "", icon=":material/notifications:", type="primary" if unread else "secondary"):
+            notes = catalog.list_notifications(USER)
+            if not notes:
+                st.caption(tr("No notifications yet."))
+            for x in notes:
+                p_ = x["params"]
+                st.markdown(f'<div class="note-item{" note-new" if not x["read"] else ""}"><span>{e(x["at"][5:])}</span>'
+                            f'{e(tr(x["template"], **p_))}</div>', unsafe_allow_html=True)
+            if unread and st.button(tr("Mark all as read"), key="bell_read", width="stretch"):
+                catalog.mark_all_read(USER)
+                st.rerun()
     h4.markdown(f'<div class="tb-user"><div class="tb-avatar">{e(initials(me["name"]))}</div><div>'
                 f'<div class="tb-uname">{e(short_name(me["name"]))}</div>'
                 f'<div class="tb-urole">{e(role_label)} · {e(me["department"])}</div></div></div>',
@@ -780,7 +829,7 @@ def live_message(role, sender, text, key):
     if role == "agent":
         with st.container(key=f"live_agent_{key}"):
             with st.chat_message("assistant", avatar=":material/headset_mic:"):
-                st.markdown(f'<div class="live-who">{e(who)} · Service Desk</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="live-who">{e(who)} · {tr("Service Desk")}</div>', unsafe_allow_html=True)
                 st.markdown(e(text))
     else:
         with st.container(key=f"msg_user_live{key}"):
@@ -806,7 +855,7 @@ def live_status():
         text=f"[A live chat with a Service Desk person took place and has ended. Transcript: {summary}]")]))
     st.session_state.live_tid = None
     st.session_state.display.append({"id": uuid.uuid4().hex, "role": "assistant", "live": "system", "sender": "",
-                                     "text": "You're back with the virtual agent. Ask me anything else."})
+                                     "text": tr("You're back with the virtual agent. Ask me anything else.")})
     return None
 
 
@@ -820,12 +869,12 @@ def live_feed_employee(tid):
         if m["role"] in ("system", "agent", "user"):
             live_message(m["role"], m["sender"], m["text"], m["id"])
     if lc["status"] == "waiting":
-        st.markdown('<div class="live-bar live-wait"><span class="live-dot"></span>Waiting for a Service Desk agent '
-                    '· you can keep typing, your messages will be passed on</div>', unsafe_allow_html=True)
+        st.markdown('<div class="live-bar live-wait"><span class="live-dot"></span>' + tr("Waiting for a Service Desk "
+                    "agent · you can keep typing, your messages will be passed on") + '</div>', unsafe_allow_html=True)
     else:
         agent_name = short_name(names.get(lc["agent"], lc["agent"] or "IT agent"))
-        st.markdown(f'<div class="live-bar live-on"><span class="live-dot"></span>You are chatting with '
-                    f'{e(agent_name)} (Service Desk) · the AI assistant is paused</div>', unsafe_allow_html=True)
+        st.markdown('<div class="live-bar live-on"><span class="live-dot"></span>' + tr("You are chatting with {name} "
+                    "(Service Desk) · the AI assistant is paused", name=e(agent_name)) + '</div>', unsafe_allow_html=True)
 
 
 
@@ -867,8 +916,8 @@ def sharepoint_saved(mail, msg_id):
 
 def incident_banner():
     for inc in incidents.active():
-        st.markdown(f'<div class="inc-banner"><span class="live-dot"></span><div><b>Known issue · {e(inc["id"])}: '
-                    f'{e(inc["title"])}</b><br><span>{e(inc["message"])} · since {e(inc["created_at"][11:])}'
+        st.markdown(f'<div class="inc-banner"><span class="live-dot"></span><div><b>{tr("Known issue")} · {e(inc["id"])}: '
+                    f'{e(inc["title"])}</b><br><span>{e(inc["message"])} · {tr("since")} {e(inc["created_at"][11:])}'
                     f'</span></div></div>', unsafe_allow_html=True)
 
 
@@ -878,38 +927,28 @@ def render_chat():
     if st.session_state.display or st.session_state.pending:
         _, b1, b2 = st.columns([1.6, 1.4, 1])
         done = st.session_state.get("handed_off", False)
-        if b1.button("Handed over" if done else "Talk to a person", icon=":material/support_agent:", width="stretch", key="human",
-                     disabled=done, help="Hand this conversation to the Service Desk team"):
+        if b1.button(tr("Handed over") if done else tr("Talk to a person"), icon=":material/support_agent:", width="stretch", key="human",
+                     disabled=done, help=tr("Hand this conversation to the Service Desk team")):
             talk_to_person()
             st.rerun()
-        if b2.button("Home", icon=":material/home:", width="stretch", key="new_top", help="Start a new conversation. Your tickets are kept."):
+        if b2.button(tr("Home"), icon=":material/home:", width="stretch", key="new_top", help=tr("Start a new conversation. Your tickets are kept.")):
             new_conversation()
             st.rerun()
     else:
         hour = db.now().hour
-        greet = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-        st.markdown(f'<div class="card welcome"><h3>{greet}, {e(short_name(me["name"]).split()[0])}</h3>'
-                    '<p>I\'m your IT virtual agent. Ask me about IT policies, check on your tickets, '
-                    'or tell me about a problem and I\'ll raise a ticket for you. I always ask before I change anything. '
-                    'You can write in English or 日本語.</p>'
-                    '<div class="caps"><span class="cap">Policy answers with sources</span>'
-                    '<span class="cap">Ticket status</span><span class="cap">Raise &amp; update tickets</span>'
-                    '<span class="cap">You confirm every action</span>'
-                    + (f'<span class="cap">Chats are saved for {RETENTION_DAYS} days</span>' if HISTORY_ON else "")
+        greet = tr("Good morning") if hour < 12 else tr("Good afternoon") if hour < 18 else tr("Good evening")
+        caps = ["Policy answers with sources", "Ticket status", "Raise & update tickets", "You confirm every action"]
+        st.markdown(f'<div class="card welcome"><h3>'
+                    f'{e(tr("{greet}, {name}", greet=greet, name=short_name(me["name"]).split()[0]))}</h3>'
+                    '<p>' + e(tr("I'm your IT virtual agent. Ask me about IT policies, check on your tickets, or tell me "
+                                 "about a problem and I'll raise a ticket for you. I always ask before I change anything."))
+                    + '</p>'
+                    '<div class="caps">' + "".join(f'<span class="cap">{e(tr(c))}</span>' for c in caps)
+                    + (f'<span class="cap">{e(tr("Chats are saved for {days} days", days=RETENTION_DAYS))}</span>'
+                       if HISTORY_ON else "")
                     + '</div></div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">Suggested</div>', unsafe_allow_html=True)
-        if is_admin:
-            examples = ["Which tickets are still open?",
-                        "Move T-1002 to the Apps Team and set it to In progress",
-                        "Show me the history of T-1001",
-                        "What does the policy say about USB drives?"]
-        else:
-            examples = ["What's the status of my monitor request?",
-                        "My keyboard stopped working, can you raise a ticket?",
-                        "I forgot my password and need to reset it",
-                        "VPNに接続できません。どうすればいいですか？",
-                        "I think I lost my company phone on the train",
-                        "Show me Mai Saito's tickets"]
+        st.markdown(f'<div class="section-title">{tr("Suggested")}</div>', unsafe_allow_html=True)
+        examples = EXAMPLES.get(LANG, EXAMPLES["en"])["admin" if is_admin else "employee"]
         with st.container(key="chips"):
             cols = st.columns(2)
             for i, ex in enumerate(examples):
@@ -918,6 +957,7 @@ def render_chat():
 
     live = live_status()                              # first, so a just-ended live chat shows up in order
     self_help_click = None
+    offer_click = None
     last_assistant = next((x["id"] for x in reversed(st.session_state.display) if x["role"] == "assistant"), None)
     for m in st.session_state.display:
         if m.get("live"):                                 # a message from a live chat with a person
@@ -928,32 +968,42 @@ def render_chat():
             with st.chat_message(m["role"], avatar=avatar):
                 st.markdown(m["text"])
                 if m.get("image"):
-                    st.image(m["image"], width=320, caption="Attached screenshot")
+                    st.image(m["image"], width=320, caption=tr("Attached screenshot"))
                 if m["role"] == "assistant":
                     if m.get("sources"):
                         st.markdown('<div class="srcs">' + "".join(f'<span class="src">{e(s)}</span>'
                                     for s in m["sources"]) + "</div>", unsafe_allow_html=True)
-                    for mail in m.get("emails", []):
-                        sharepoint_saved(mail, m["id"])
                     for article_id in m.get("kb", []):
                         kb_draft_box(article_id, m["id"])
                     for mail in m.get("emails", []):
                         email_preview(mail["kind"], mail["ticket_id"])
-                    if m.get("steps"):
+                    if m.get("steps") and is_admin:            # employees just see the answer
                         n = len(m["steps"])
-                        with st.expander(f"How I worked this out ({n} step{'s' if n != 1 else ''})"):
+                        with st.expander(tr("How I worked this out ({n} steps)", n=n)):
                             st.markdown('<div class="steps">' + "<br>".join(e(s) for s in m["steps"]) + "</div>",
                                         unsafe_allow_html=True)
                     if m.get("self_help") == "ask" and m["id"] == last_assistant and not st.session_state.pending:
                         with st.container(key=f"sh_{m['id']}"):
-                            st.markdown('<div class="sh-q">Did this solve your problem?</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="sh-q">{tr("Did this solve your problem?")}</div>', unsafe_allow_html=True)
                             y, n_, _ = st.columns([1.2, 1.4, 1])
-                            if y.button("Yes, solved", key=f"shy_{m['id']}", type="primary", width="stretch"):
+                            if y.button(tr("Yes, solved"), key=f"shy_{m['id']}", type="primary", width="stretch"):
                                 self_help_click = (m, True)
-                            if n_.button("No, raise a ticket", key=f"shn_{m['id']}", width="stretch"):
+                            if n_.button(tr("No, raise a ticket"), key=f"shn_{m['id']}", width="stretch"):
                                 self_help_click = (m, False)
+                    elif m.get("offer") == "ask" and m["id"] == last_assistant and not st.session_state.pending:
+                        with st.container(key=f"of_{m['id']}"):
+                            y, h_, n_ = st.columns([1.3, 1.3, 1])
+                            if y.button(tr("Yes, raise a ticket"), key=f"ofy_{m['id']}", type="primary",
+                                        icon=":material/confirmation_number:", width="stretch"):
+                                offer_click = (m, "yes")
+                            if h_.button(tr("Talk to a person"), key=f"ofp_{m['id']}",
+                                         icon=":material/support_agent:", width="stretch",
+                                         disabled=st.session_state.get("handed_off", False)):
+                                offer_click = (m, "person")
+                            if n_.button(tr("No, thanks"), key=f"ofn_{m['id']}", width="stretch"):
+                                offer_click = (m, "no")
                     elif m.get("self_help") == "solved":
-                        st.markdown('<div class="sh-done">Solved with self-help · no ticket needed</div>',
+                        st.markdown(f'<div class="sh-done">{tr("Solved with self-help · no ticket needed")}</div>',
                                     unsafe_allow_html=True)
                     rating = st.feedback("thumbs", key=f"fb_{m['id']}")
                     if rating is not None and st.session_state.feedback_saved.get(m["id"]) != rating:
@@ -972,37 +1022,54 @@ def render_chat():
             return options.index(value) if value in options else 0
 
         heading, button = {
-            "create_ticket": ("Please confirm your new ticket", "Submit ticket"),
-            "add_comment": (f"Please confirm this update to {a.get('ticket_id', '')}", "Add update"),
-            "update_ticket": (f"Please confirm the change to {a.get('ticket_id', '')}", "Save changes"),
-            "close_ticket": (f"Please confirm: close ticket {a.get('ticket_id', '')}", "Close ticket"),
-        }.get(p["name"], (f"Please confirm: {p['name']}", "Confirm"))
+            "create_ticket": (tr("Please confirm your new ticket"), tr("Submit ticket")),
+            "add_comment": (tr("Please confirm this update to {id}", id=a.get('ticket_id', '')), tr("Add update")),
+            "update_ticket": (tr("Please confirm the change to {id}", id=a.get('ticket_id', '')), tr("Save changes")),
+            "close_ticket": (tr("Please confirm: close ticket {id}", id=a.get('ticket_id', '')), tr("Close ticket")),
+            "request_item": (tr("Please confirm your request"), tr("Send request")),
+        }.get(p["name"], (tr("Please confirm: {name}", name=p['name']), tr("Confirm")))
         with st.container(key="approval"):
             st.markdown(f'<div class="ap-head">{e(heading)}</div>'
-                        '<div class="ap-sub">Check the details and change anything that\'s wrong. '
-                        'Nothing happens until you confirm.</div>', unsafe_allow_html=True)
+                        '<div class="ap-sub">' + e(tr("Check the details and change anything that's wrong. "
+                                                     "Nothing happens until you confirm.")) + '</div>',
+                        unsafe_allow_html=True)
             with st.form("confirm", border=False):
                 if p["name"] == "create_ticket":
-                    title = st.text_input("Title", a.get("title", ""))
-                    desc = st.text_area("Details", a.get("description", ""), height=80)
+                    title = st.text_input(tr("Title"), a.get("title", ""))
+                    desc = st.text_area(tr("Details"), a.get("description", ""), height=80)
                     c1, c2, c3 = st.columns(3)
-                    pr = c1.selectbox("Priority", tools.PRIORITIES, index=pick(tools.PRIORITIES, a.get("priority")))
-                    team = c2.selectbox("Assign to", tools.TEAMS, index=pick(tools.TEAMS, a.get("team")))
-                    cat = c3.text_input("Category", a.get("category", ""))
+                    pr = c1.selectbox(tr("Priority"), tools.PRIORITIES, index=pick(tools.PRIORITIES, a.get("priority")), format_func=tr)
+                    team = c2.selectbox(tr("Assign to"), tools.TEAMS, index=pick(tools.TEAMS, a.get("team")))
+                    cat = c3.text_input(tr("Category"), a.get("category", ""))
                     final = {"title": title, "description": desc, "category": cat, "priority": pr, "team": team}
+                elif p["name"] == "request_item":
+                    items = list(catalog.CATALOG)
+                    found = catalog.find_item(a.get("item")) or items[0]
+                    it = st.selectbox(tr("Item"), items, index=items.index(found),
+                                      format_func=lambda x: f'{x} · {catalog.CATALOG[x]["cost"]}')
+                    det = st.text_input(tr("Details"), a.get("details", ""))
+                    why = st.text_area(tr("Business reason"), a.get("reason", ""), height=70)
+                    mgr = catalog.manager_of(USER, tools.EMPLOYEES)
+                    if catalog.CATALOG[it]["approval"] and mgr:
+                        st.caption(tr("Needs approval from {name}. You will get a notification when they decide.",
+                                      name=short_name(names.get(mgr, mgr))))
+                    else:
+                        st.caption(tr("No approval needed: it goes straight to the {team}.",
+                                      team=catalog.CATALOG[it]["team"]))
+                    final = {"item": it, "details": det, "reason": why}
                 elif p["name"] == "add_comment":
-                    comment = st.text_area("Update", a.get("comment", ""), height=80)
+                    comment = st.text_area(tr("Update"), a.get("comment", ""), height=80)
                     final = {"ticket_id": a.get("ticket_id", ""), "comment": comment}
                 elif p["name"] == "close_ticket":
-                    reason = st.text_area("Reason", a.get("reason", ""), height=70)
+                    reason = st.text_area(tr("Reason"), a.get("reason", ""), height=70)
                     final = {"ticket_id": a.get("ticket_id", ""), "reason": reason}
                 elif p["name"] == "update_ticket":
-                    keep = "(no change)"
+                    keep = "(no change)"                 # shown as （変更なし） in Japanese (format_func)
                     c1, c2, c3 = st.columns(3)
-                    stt = c1.selectbox("Status", [keep] + tools.STATUSES, index=pick([keep] + tools.STATUSES, a.get("status")))
-                    tm = c2.selectbox("Team", [keep] + tools.TEAMS, index=pick([keep] + tools.TEAMS, a.get("team")))
-                    prr = c3.selectbox("Priority", [keep] + tools.PRIORITIES, index=pick([keep] + tools.PRIORITIES, a.get("priority")))
-                    note = st.text_area("Note", a.get("note", ""), height=70)
+                    stt = c1.selectbox(tr("Status"), [keep] + tools.STATUSES, index=pick([keep] + tools.STATUSES, a.get("status")), format_func=tr)
+                    tm = c2.selectbox(tr("Team"), [keep] + tools.TEAMS, index=pick([keep] + tools.TEAMS, a.get("team")), format_func=tr)
+                    prr = c3.selectbox(tr("Priority"), [keep] + tools.PRIORITIES, index=pick([keep] + tools.PRIORITIES, a.get("priority")), format_func=tr)
+                    note = st.text_area(tr("Note"), a.get("note", ""), height=70)
                     final = {"ticket_id": a.get("ticket_id", ""), "status": "" if stt == keep else stt,
                              "team": "" if tm == keep else tm, "priority": "" if prr == keep else prr, "note": note}
                 else:
@@ -1010,7 +1077,7 @@ def render_chat():
                     final = dict(a)
                 s, c, _ = st.columns([1.3, 1, 2])
                 submitted = s.form_submit_button(button, type="primary", width="stretch")
-                cancelled = c.form_submit_button("Cancel", width="stretch")
+                cancelled = c.form_submit_button(tr("Cancel"), width="stretch")
             if submitted:
                 decide(True, final)
                 st.rerun()
@@ -1021,14 +1088,17 @@ def render_chat():
     if self_help_click:
         self_help_answer(*self_help_click)
         st.rerun()
+    if offer_click:
+        ticket_offer_answer(*offer_click)
+        st.rerun()
 
     if live:                                          # talking to a person: the AI is paused
-        sent = st.chat_input("Message the Service Desk…", key="live_input")
+        sent = st.chat_input(tr("Message the Service Desk…"), key="live_input")
         if sent:
             db.add_live_message(live["ticket_id"], "user", USER, sent)
             st.rerun()
         return
-    sent = st.chat_input("Ask about IT policies, your tickets, or describe a problem… (you can attach a screenshot)",
+    sent = st.chat_input(tr("Ask about IT policies, your tickets, or describe a problem… (you can attach a screenshot)"),
                          disabled=bool(st.session_state.pending), accept_file=True, file_type=["png", "jpg", "jpeg"])
     if sent and (sent.text or sent.files):
         ask(sent.text, shrink_image(sent.files[0]) if sent.files else None)
@@ -1044,19 +1114,50 @@ def kpis(items, wide=False):
                                            f'<div class="kpi-l">{e(label)}</div></div>' for label, v in items) + "</div>")
 
 
+def approval_cards():
+    """Requests waiting for this person's decision (they are someone's manager). No AI involved."""
+    waiting = catalog.pending_for(USER)
+    if not waiting:
+        return
+    st.markdown(f'<div class="section-title">{tr("Approvals waiting for you · {n}", n=len(waiting))}</div>',
+                unsafe_allow_html=True)
+    for a in waiting:
+        info = catalog.CATALOG.get(a["item"], {})
+        with st.container(key=f"apr_{a['ticket_id']}"):
+            st.markdown(f'<div class="tk-top"><span class="tk-id">{e(a["ticket_id"])}</span>'
+                        f'<span class="badge s-waiting">{tr("Waiting for approval")}</span></div>'
+                        f'<div class="tk-title">{e(a["item"])} · {e(info.get("cost", ""))}</div>'
+                        f'<div class="tk-meta">{e(short_name(names.get(a["requester"], a["requester"])))} · '
+                        f'{e(a["created_at"])}</div>'
+                        f'<div class="wait"><b>{tr("Reason:")}</b> {e(a["reason"] or "—")}</div>', unsafe_allow_html=True)
+            comment = st.text_input(tr("Comment (optional)"), key=f"aprc_{a['ticket_id']}")
+            y, n_ = st.columns(2)
+            choice = None
+            if y.button(tr("Approve"), key=f"apry_{a['ticket_id']}", type="primary", icon=":material/check:",
+                        width="stretch"):
+                choice = True
+            if n_.button(tr("Reject"), key=f"aprn_{a['ticket_id']}", icon=":material/close:", width="stretch"):
+                choice = False
+            if choice is not None:
+                catalog.decide(a["ticket_id"], USER, choice, comment.strip(), short_name(me["name"]))
+                st.toast(tr("{id} approved.", id=a["ticket_id"]) if choice else tr("{id} rejected.", id=a["ticket_id"]))
+                st.rerun()
+
+
 def render_my_tickets():
+    approval_cards()
     mine = db.list_tickets(USER)
     current = [t for t in mine if t["status"] not in ("Resolved", "Closed")]
     past = [t for t in mine if t["status"] in ("Resolved", "Closed")]
-    st.markdown(f'<div class="section-title">My open tickets · {len(current)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">{tr("My open tickets · {n}", n=len(current))}</div>', unsafe_allow_html=True)
     if not current:
-        st.markdown('<div class="card" style="color:#6B7A8C;font-size:14px">You have no open tickets. '
-                    'Describe a problem in the chat and the agent can help or raise one for you.</div>',
+        st.markdown('<div class="card" style="color:#6B7A8C;font-size:14px">' + e(tr("You have no open tickets. "
+                    "Describe a problem in the chat and the agent can help or raise one for you.")) + '</div>',
                     unsafe_allow_html=True)
     for t in reversed(current):
         ticket_card(t, actions=True)
     if past:
-        with st.expander(f"Past tickets ({len(past)})"):
+        with st.expander(tr("Past tickets ({n})", n=len(past))):
             for t in reversed(past):
                 ticket_card(t, key_prefix="tkpast")
 
@@ -1066,19 +1167,19 @@ def needs_attention_cards(limit=None):
     hot = [t for t in open_t if t["priority"] in ("High", "Urgent")]
     handoffs = [t for t in open_t if t["status"] == "Waiting for agent"]
     overdue = [t for t in open_t if sla.is_overdue(t)]
-    st.markdown(kpis([("Open tickets", len(open_t)), ("Overdue", len(overdue)),
-                      ("High / Urgent", len(hot)), ("Waiting for a person", len(handoffs))]),
+    st.markdown(kpis([(tr("Open tickets"), len(open_t)), (tr("Overdue"), len(overdue)),
+                      (tr("High / Urgent"), len(hot)), (tr("Waiting for a person"), len(handoffs))]),
                 unsafe_allow_html=True)
     attention = [t for t in open_t if t in hot or t in handoffs or t in overdue]
     attention.sort(key=lambda t: (t["status"] != "Waiting for agent", not sla.is_overdue(t),
                                   {"Urgent": 0, "High": 1}.get(t["priority"], 2)))
-    st.markdown(f'<div class="section-title">Needs attention · {len(attention)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">{tr("Needs attention · {n}", n=len(attention))}</div>', unsafe_allow_html=True)
     if not attention:
-        st.caption("Nothing urgent right now.")
+        st.caption(tr("Nothing urgent right now."))
     for t in attention[:limit]:
         ticket_card(t, show_requester=True, key_prefix="tkatt")
     if limit and len(attention) > limit:
-        st.caption(f"+ {len(attention) - limit} more on the Tickets page.")
+        st.caption(tr("+ {n} more on the Tickets page.", n=len(attention) - limit))
 
 
 
@@ -1237,6 +1338,17 @@ def page_quality():
                 f'output tokens, plus {totals.get("embedding", {}).get("calls", 0)} policy searches. '
                 'Your Google billing page shows the exact amount.</div>', unsafe_allow_html=True)
 
+    ts = db.timing_stats(last=50)                         # how long employees waited for each answer
+    st.markdown('<div class="section-title" style="margin-top:14px">Answer speed · last 50 answers</div>' +
+                kpis(wide=True, items=[("Typical answer time (median)", f"{ts['median']:.1f} s" if ts else "–"),
+                      ("Fastest", f"{ts['fastest']:.1f} s" if ts else "–"),
+                      ("Slowest", f"{ts['slowest']:.1f} s" if ts else "–"),
+                      ("Answers measured", ts["count"] if ts else 0)]), unsafe_allow_html=True)
+    st.markdown(f'<div class="note">Model: {e(agent.CHAT_MODEL)} · thinking level: {e(agent.THINKING or "default")}. '
+                'Time from pressing Enter to the answer on screen. The free Streamlit Cloud server is in the USA, '
+                'so answers from Tokyo take a little longer than on a company server in Japan.</div>',
+                unsafe_allow_html=True)
+
 def waited(since):
     mins = int((db.now() - datetime.datetime.fromisoformat(since).replace(tzinfo=db.TOKYO)).total_seconds() // 60)
     return "just now" if mins < 1 else f"{mins} min ago" if mins < 60 else f"{mins // 60} h {mins % 60} min ago"
@@ -1313,7 +1425,7 @@ def page_live():
         t = db.get_ticket(tid)
         who = short_name(names.get(lc["user"], lc["user"]))
         st.markdown(f'<div class="card"><div class="tk-top"><span class="tk-id">{e(tid)} · {e(who)}</span>'
-                    f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(t["status"])}</span></div>'
+                    f'<span class="badge {STATUS_CLASS.get(t["status"], "s-new")}">{e(tr(t["status"]))}</span></div>'
                     f'<div class="tk-meta">{e(tools.EMPLOYEES.get(lc["user"], {}).get("department", ""))} · '
                     f'{e(lc["user"])} · asked {e(waited(lc["requested_at"]))}</div></div>', unsafe_allow_html=True)
         before = [m for m in db.list_live_messages(tid) if m["role"].startswith("before_")]
@@ -1701,15 +1813,19 @@ if not is_admin:                                          # employees: chat + my
     with side_col:
         render_my_tickets()
 else:                                                     # IT admin: full-width console with a menu
-    PAGES = ["Dashboard", "Tickets", "Incidents", "Knowledge base", "SharePoint", "Live chats", "Assistant", "Chats",
+    PAGES = ["Dashboard", "Tickets", "Incidents", "Knowledge base", "Live chats", "Assistant", "Chats",
              "Audit log", "Quality & cost"]
+    if os.getenv("SHOW_SHAREPOINT", "0") == "1":          # hidden since the management demo (was confusing)
+        PAGES.insert(4, "SharePoint")
+    if st.session_state.get("nav") not in PAGES:
+        st.session_state.nav = "Dashboard"
     st.session_state.setdefault("nav", "Dashboard")
     if st.session_state.pop("goto_live", False):
         st.session_state.nav = "Live chats"
     if st.session_state.pop("goto_inc", False):
         st.session_state.nav = "Incidents"
     with st.container(key="adminnav"):
-        NAV = st.segmented_control("Admin menu", PAGES, key="nav",
+        NAV = st.segmented_control("Admin menu", PAGES, key="nav", format_func=tr,
                                    label_visibility="collapsed") or "Dashboard"
     live_alert(NAV)
     if NAV == "Dashboard":
@@ -1762,5 +1878,5 @@ if HISTORY_ON and st.session_state.display:            # save the whole chat (op
     db.save_conversation(st.session_state.conv_id, USER, st.session_state.conv_started,
                          conversation_outcome(st.session_state.display), st.session_state.display)
 
-st.markdown(f'<div class="foot">{BRAND} IT Service Desk · Demo environment · Dummy data only · '
-            'Powered by Google Gemini</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="foot">{BRAND} {tr("IT Service Desk")} · '
+            f'{tr("Demo environment · Dummy data only · Powered by Google Gemini")}</div>', unsafe_allow_html=True)
