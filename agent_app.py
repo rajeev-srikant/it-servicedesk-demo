@@ -26,6 +26,8 @@ import kb
 import incidents
 import catalog
 import trending
+import sla_alerts
+import team_view
 import benefits
 import org
 import insights
@@ -360,9 +362,17 @@ USER = st.session_state.user
 me = tools.EMPLOYEES[USER]
 is_admin = tools.is_admin(USER)
 is_management = tools.EMPLOYEES.get(USER, {}).get("role") == "management"   # senior management: Benefits page only
-role_label = tr("IT Admin") if is_admin else tr("Management") if is_management else tr("Employee")
+is_agent = tools.EMPLOYEES.get(USER, {}).get("role") == "agent"            # IT team member: team queue only
+role_label = (tr("IT Admin") if is_admin else tr("Management") if is_management
+              else tr("IT team") if is_agent else tr("Employee"))
 LANG = st.session_state.get("lang", "en")     # "en" or "ja", chosen in the language box at the top
 names = {p["email"]: p["name"] for p in tools.EMPLOYEES.values()}
+
+if is_admin or is_agent:                                  # proactive SLA alerts (at most every 5 minutes),
+    try:                                                  # before the header so the bell shows them at once
+        sla_alerts.check(tools._client, tools.EMPLOYEES)
+    except Exception:
+        pass
 st.session_state.setdefault("feedback_saved", {})
 
 # Conversation history (optional): the IT admin can switch it on/off and choose how long chats are kept
@@ -764,7 +774,7 @@ with st.sidebar:
                 f'<div class="prof-d">{e(role_label)} · ID {e(me["employee_id"])}<br>'
                 f'{e(org.label(USER))}<br>{e(me["location"])}</div></div></div>', unsafe_allow_html=True)
     st.write("")
-    if not is_management and st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
+    if not (is_management or is_agent) and st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
         new_conversation()
         st.rerun()
     if GOOGLE:
@@ -1831,6 +1841,8 @@ def page_incidents():
 # ---------- Layout ----------
 if is_management:                                         # senior management: one page with the benefits
     benefits.render()
+elif is_agent:                                            # IT team member: team queue + AI SLA alerts
+    team_view.render(USER, tools.EMPLOYEES[USER]["agent_team"], tools.EMPLOYEES, names, tools._client)
 elif not is_admin:                                        # employees: chat + my tickets (unchanged)
     chat_col, side_col = st.columns([3, 2], gap="large")
     with chat_col:

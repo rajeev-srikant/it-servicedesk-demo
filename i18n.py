@@ -14,7 +14,7 @@ def lang():
     return st.session_state.get("lang", "en")
 
 
-def tr(text, **values):
+def tr(text, /, **values):
     """Translate one screen text. Values in {curly brackets} are filled in after translating."""
     out = JA.get(text, text) if lang() == "ja" else text
     return out.format(**values) if values else out
@@ -399,6 +399,35 @@ JA = {
     "Employee time lost per ticket (min)": "チケット1件あたりの社員の損失時間（分）",
     "Conservative": "保守的", "Expected": "標準", "Ambitious": "積極的",
     "Business value": "ビジネス価値",
+    "IT team": "IT チーム",
+    "{team} queue": "{team} の対応キュー",
+    "Open tickets for your team, most urgent first. The AI warns you before a ticket misses its target.":
+        "チームの未完了チケット（緊急度の高い順）。期限を過ぎる前に AI が通知します。",
+    "Run SLA check now": "今すぐ SLA チェック",
+    "In the pilot this runs automatically every 10–15 minutes.": "パイロットでは 10〜15 分ごとに自動実行されます。",
+    "Checking service targets…": "対応目標を確認しています…",
+    "{n} new SLA alerts": "新しい SLA アラート {n} 件",
+    "No new SLA alerts": "新しい SLA アラートはありません",
+    "Open tickets": "未完了チケット",
+    "At risk": "期限間近",
+    "Breached": "期限超過",
+    "On track": "順調",
+    "Team queue": "チームの対応キュー",
+    "No open tickets. Well done.": "未完了のチケットはありません。",
+    "SLA alerts written by the AI": "AI が作成した SLA アラート",
+    "Sent to your team in the 🔔 bell. Breached tickets are also escalated to the Service Desk manager.":
+        "🔔 でチームに通知されます。期限超過のチケットはサービスデスク管理者にもエスカレーションされます。",
+    "No SLA alerts yet.": "SLA アラートはまだありません。",
+    "Reply to user": "ユーザーに返信",
+    "Message": "メッセージ",
+    "e.g. I'm checking this now and will call you in 10 minutes.": "例: 現在確認中です。10分後にお電話します。",
+    "Send": "送信",
+    "Reply sent to {name}.": "{name} さんに返信しました。",
+    "Resolve": "解決",
+    "How was it fixed?": "どのように解決しましたか？",
+    "{id} resolved.": "{id} を解決しました。",
+    "SLA at risk · {tid}: {text}": "SLA 期限間近 · {tid}: {text}",
+    "SLA breached · {tid}: {text}": "SLA 期限超過 · {tid}: {text}",
     "Most asked this week": "今週よくある質問",
     "Asked by {n} people this week": "今週 {n} 人が質問",
     "Estimated annual impact and pilot success measures": "年間の想定効果とパイロットの評価指標",

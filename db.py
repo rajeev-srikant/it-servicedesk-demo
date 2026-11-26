@@ -93,6 +93,8 @@ def init():
     catalog.init()
     import trending                                # most-asked questions of the week (trending.py)
     trending.init()
+    import sla_alerts                              # proactive SLA alerts for IT teams (sla_alerts.py)
+    sla_alerts.init()
 
 
 def reset(demo_history=True):
@@ -112,6 +114,8 @@ def reset(demo_history=True):
     catalog.reset()
     import trending
     trending.reset()
+    import sla_alerts
+    sla_alerts.reset()
     set_setting("kb_gap_groups", "[]")
     set_setting("weekly_summary", "")
 

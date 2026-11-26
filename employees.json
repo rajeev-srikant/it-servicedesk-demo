@@ -9,6 +9,8 @@
   {"email": "rajeev@testbank.com", "name": "Rajeev (Demo User)", "employee_id": "99001", "department": "IT", "team": "ISO 5", "cost_center": "CC-4105", "location": "Tokyo HQ, 5th floor"},
   {"email": "keiko.mori@testbank.com", "name": "Keiko Mori (Manager)", "employee_id": "70001", "department": "IT", "team": "ISO 5", "cost_center": "CC-4105", "location": "Tokyo HQ, 5th floor"},
   {"email": "management@testbank.com", "name": "Management", "employee_id": "90001", "department": "Executive Office", "team": "Senior Management", "cost_center": "CC-9000", "location": "Tokyo HQ, 20th floor", "role": "management"},
+  {"email": "kenta.ito@testbank.com", "name": "Kenta Ito (Apps Team)", "employee_id": "80001", "department": "IT", "team": "Apps Team", "cost_center": "CC-4120", "location": "Tokyo HQ, 5th floor", "role": "agent", "agent_team": "Apps Team"},
+  {"email": "yui.mori@testbank.com", "name": "Yui Mori (Network Team)", "employee_id": "80002", "department": "IT", "team": "Network Team", "cost_center": "CC-4130", "location": "Tokyo HQ, 5th floor", "role": "agent", "agent_team": "Network Team"},
   {"email": "it_helpdesk@testbank.com", "name": "Aiko Tanaka (IT Admin)", "employee_id": "99002", "department": "IT", "team": "Service Desk", "cost_center": "CC-4110", "location": "Tokyo HQ, 5th floor", "role": "admin"},
   {"email": "haruto.ito@testbank.com", "name": "Haruto Ito", "employee_id": "60100", "department": "Operations", "location": "Tokyo HQ, 8th floor", "listed": false},
   {"email": "yui.kato@testbank.com", "name": "Yui Kato", "employee_id": "60107", "department": "Treasury", "location": "Tokyo HQ, 9th floor", "listed": false},
