@@ -91,10 +91,13 @@ def init():
     incidents.init()
     import catalog
     catalog.init()
+    import trending                                # most-asked questions of the week (trending.py)
+    trending.init()
 
 
 def reset(demo_history=True):
     """Delete everything and go back to the starting tickets (plus ~12 weeks of dummy history for the dashboard)."""
+    init()                                          # safety: make sure every table and column exists first
     with _conn() as c:
         for table in ("tickets", "history", "audit", "feedback", "usage", "self_help", "conversations",
                       "live_chats", "live_messages", "graph_log"):
@@ -107,6 +110,8 @@ def reset(demo_history=True):
     kb.reset()
     import catalog
     catalog.reset()
+    import trending
+    trending.reset()
     set_setting("kb_gap_groups", "[]")
     set_setting("weekly_summary", "")
 
@@ -181,6 +186,7 @@ def create_ticket(requester_email, title, category, priority, team, status, firs
         today = now().date().isoformat()
         title, first_note = redact(title), redact(first_note)
         import org
+        _ensure_org_columns(c)                     # safety: an older database may not have these columns yet
         o = org.info(requester_email)              # copy of department / team / cost center at creation time
         c.execute("INSERT INTO tickets (ticket_id, requester_email, title, category, priority, team, status, "
                   "created, created_at, channel, department, org_team, cost_center) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -193,10 +199,18 @@ def create_ticket(requester_email, title, category, priority, team, status, firs
     return new_id
 
 
+def _ensure_org_columns(c):
+    columns = [r[1] for r in c.execute("PRAGMA table_info(tickets)")]
+    for col in ("department", "org_team", "cost_center"):
+        if col not in columns:
+            c.execute(f"ALTER TABLE tickets ADD COLUMN {col} TEXT")
+
+
 def backfill_org():
     """Tickets without a department (older tickets, demo data) get the requester's current department."""
     import org
     with _conn() as c:
+        _ensure_org_columns(c)                     # safety: add the columns if this database is older
         rows = c.execute("SELECT ticket_id, requester_email FROM tickets WHERE department IS NULL").fetchall()
         for r in rows:
             o = org.info(r["requester_email"])

@@ -25,6 +25,8 @@ import sharepoint
 import kb
 import incidents
 import catalog
+import trending
+import benefits
 import org
 import insights
 
@@ -357,7 +359,8 @@ else:
 USER = st.session_state.user
 me = tools.EMPLOYEES[USER]
 is_admin = tools.is_admin(USER)
-role_label = tr("IT Admin") if is_admin else tr("Employee")
+is_management = tools.EMPLOYEES.get(USER, {}).get("role") == "management"   # senior management: Benefits page only
+role_label = tr("IT Admin") if is_admin else tr("Management") if is_management else tr("Employee")
 LANG = st.session_state.get("lang", "en")     # "en" or "ja", chosen in the language box at the top
 names = {p["email"]: p["name"] for p in tools.EMPLOYEES.values()}
 st.session_state.setdefault("feedback_saved", {})
@@ -426,6 +429,8 @@ def shrink_image(uploaded):
 
 def ask(prompt, image=None):
     prompt = prompt or tr("Here is a screenshot of my problem.")
+    if not is_admin:                                  # counts towards "Most asked this week" (topic only, not the words)
+        trending.log_question(USER, LANG, prompt)
     st.session_state.display.append({"id": uuid.uuid4().hex, "role": "user", "text": prompt, "image": image})
     parts = [types.Part.from_text(text=prompt)]
     if image:                                         # the AI can "see" the screenshot
@@ -759,7 +764,7 @@ with st.sidebar:
                 f'<div class="prof-d">{e(role_label)} · ID {e(me["employee_id"])}<br>'
                 f'{e(org.label(USER))}<br>{e(me["location"])}</div></div></div>', unsafe_allow_html=True)
     st.write("")
-    if st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
+    if not is_management and st.button(tr("New conversation"), icon=":material/add:", type="primary", width="stretch", key="new_side"):
         new_conversation()
         st.rerun()
     if GOOGLE:
@@ -780,8 +785,8 @@ with st.sidebar:
     st.write("")
     if st.button(tr("How it works & safety"), icon=":material/verified_user:", width="stretch", key="how"):
         how_it_works()
-    st.markdown(f'<div class="side-foot">{tr("Demo environment with dummy data.")}<br>'
-                f'{tr("Actions only change demo tickets.")}<br>{tr("AI model: Google Gemini")}<br>'
+    st.markdown(f'<div class="side-foot">{tr("Demo environment.")}<br>'
+                f'{tr("Actions only change demo tickets.")}<br>'
                 + (tr("Conversations are saved for {days} days for quality and audit.", days=RETENTION_DAYS)
                    if HISTORY_ON else tr("Conversations are not saved.")) + '</div>', unsafe_allow_html=True)
 
@@ -951,12 +956,19 @@ def render_chat():
                     + (f'<span class="cap">{e(tr("Chats are saved for {days} days", days=RETENTION_DAYS))}</span>'
                        if HISTORY_ON else "")
                     + '</div></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="section-title">{tr("Suggested")}</div>', unsafe_allow_html=True)
-        examples = EXAMPLES.get(LANG, EXAMPLES["en"])["admin" if is_admin else "employee"]
+        top = [] if is_admin else trending.most_asked(LANG)       # employees: what colleagues ask most this week
+        if len(top) >= 3:
+            st.markdown(f'<div class="section-title">{tr("Most asked this week")}</div>', unsafe_allow_html=True)
+            examples = [q for q, _ in top]
+            helps = [tr("Asked by {n} people this week", n=n) for _, n in top]
+        else:                                                     # not enough data yet: fixed examples
+            st.markdown(f'<div class="section-title">{tr("Suggested")}</div>', unsafe_allow_html=True)
+            examples = EXAMPLES.get(LANG, EXAMPLES["en"])["admin" if is_admin else "employee"]
+            helps = [None] * len(examples)
         with st.container(key="chips"):
             cols = st.columns(2)
             for i, ex in enumerate(examples):
-                if cols[i % 2].button(ex, key=f"ex{i}", width="stretch"):
+                if cols[i % 2].button(ex, key=f"ex{i}", width="stretch", help=helps[i]):
                     clicked = ex
 
     live = live_status()                              # first, so a just-ended live chat shows up in order
@@ -1817,14 +1829,16 @@ def page_incidents():
 
 
 # ---------- Layout ----------
-if not is_admin:                                          # employees: chat + my tickets (unchanged)
+if is_management:                                         # senior management: one page with the benefits
+    benefits.render()
+elif not is_admin:                                        # employees: chat + my tickets (unchanged)
     chat_col, side_col = st.columns([3, 2], gap="large")
     with chat_col:
         render_chat()
     with side_col:
         render_my_tickets()
 else:                                                     # IT admin: full-width console with a menu
-    PAGES = ["Dashboard", "Tickets", "Incidents", "Knowledge base", "Live chats", "Assistant", "Chats",
+    PAGES = ["Dashboard", "Business value", "Tickets", "Incidents", "Knowledge base", "Live chats", "Assistant", "Chats",
              "Audit log", "Quality & cost"]
     if os.getenv("SHOW_SHAREPOINT", "0") == "1":          # hidden since the management demo (was confusing)
         PAGES.insert(4, "SharePoint")
@@ -1841,6 +1855,8 @@ else:                                                     # IT admin: full-width
     live_alert(NAV)
     if NAV == "Dashboard":
         dashboard.render(names)
+    elif NAV == "Business value":
+        benefits.render()
     elif NAV == "Tickets":
         page_tickets()
     elif NAV == "Assistant":
@@ -1890,4 +1906,4 @@ if HISTORY_ON and st.session_state.display:            # save the whole chat (op
                          conversation_outcome(st.session_state.display), st.session_state.display)
 
 st.markdown(f'<div class="foot">{BRAND} {tr("IT Service Desk")} · '
-            f'{tr("Demo environment · Dummy data only · Powered by Google Gemini")}</div>', unsafe_allow_html=True)
+            f'{tr("Demo environment")}</div>', unsafe_allow_html=True)

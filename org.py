@@ -17,7 +17,7 @@ COST_CENTERS = {
     "Finance": "CC-2100", "Legal": "CC-2200", "HR": "CC-2300",
     "Customer Support": "CC-3100", "Operations": "CC-3200",
     "Retail Banking": "CC-5100", "Treasury": "CC-5200", "Corporate Banking": "CC-5300",
-    "Risk": "CC-6100", "Compliance": "CC-6200",
+    "Risk": "CC-6100", "Compliance": "CC-6200", "Executive Office": "CC-9000",
 }
 UNKNOWN = {"department": "Unassigned", "team": "Unassigned", "cost_center": "CC-0000"}
 
